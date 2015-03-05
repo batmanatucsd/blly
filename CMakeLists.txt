@@ -1,13 +1,20 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(blly)
 
+set(OpenCV_DIR "/usr/local/share/OpenCV/")
+
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
   roscpp
-  rospy
   std_msgs
+    message_generation
+    OpenCV
+    sensor_msgs
+    cv_bridge
+    image_transport
+
 )
 
 ## System dependencies are found with CMake's conventions
@@ -81,7 +88,7 @@ find_package(catkin REQUIRED COMPONENTS
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
 #  INCLUDE_DIRS include
-#  LIBRARIES blly
+#  LIBRARIES track_copter
 #  CATKIN_DEPENDS roscpp rospy std_msgs
 #  DEPENDS system_lib
 )
@@ -95,24 +102,27 @@ catkin_package(
 # include_directories(include)
 include_directories(
   ${catkin_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 ## Declare a cpp library
-# add_library(blly
-#   src/${PROJECT_NAME}/blly.cpp
+# add_library(track_copter
+#   src/${PROJECT_NAME}/track_copter.cpp
 # )
 
 ## Declare a cpp executable
-# add_executable(blly_node src/blly_node.cpp)
+add_executable(track_copter src/track_copter.cpp)
 
 ## Add cmake target dependencies of the executable/library
 ## as an example, message headers may need to be generated before nodes
-# add_dependencies(blly_node blly_generate_messages_cpp)
+# add_dependencies(track_copter_node track_copter_generate_messages_cpp)
+#add_dependencies(track_copter std_msgs)
 
 ## Specify libraries to link a library or executable target against
-# target_link_libraries(blly_node
-#   ${catkin_LIBRARIES}
-# )
+ target_link_libraries(track_copter
+   ${catkin_LIBRARIES}
+   ${OpenCV_INCLUDE_DIRS}
+ )
 
 #############
 ## Install ##
@@ -129,7 +139,7 @@ include_directories(
 # )
 
 ## Mark executables and/or libraries for installation
-# install(TARGETS blly blly_node
+# install(TARGETS track_copter track_copter_node
 #   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 #   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
 #   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -154,7 +164,7 @@ include_directories(
 #############
 
 ## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_blly.cpp)
+# catkin_add_gtest(${PROJECT_NAME}-test test/test_track_copter.cpp)
 # if(TARGET ${PROJECT_NAME}-test)
 #   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
 # endif()

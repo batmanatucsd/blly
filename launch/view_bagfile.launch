@@ -1,0 +1,13 @@
+<launch>
+
+    <arg name="bagfile" default="none"/>
+
+    <node pkg="image_view" type="image_view" name="depth_image">
+        <remap from="image" to="camera/depth/image"/>
+    </node>
+
+    <node pkg="image_view" type="image_view" name="rgb_image">
+        <remap from="image" to="camera/rgb/image_color"/>
+    </node>
+
+</launch>
