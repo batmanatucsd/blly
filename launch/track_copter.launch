@@ -8,7 +8,7 @@
         <remap from="image" to="camera/rgb/image_color"/>
     </node>
 
-    <node pkg="track_copter" type="track_copter" name="track_copter" output="screen">
+    <node pkg="blly" type="track_copter" name="track_copter" output="screen">
     </node>
 
 </launch>
