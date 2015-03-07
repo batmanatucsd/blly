@@ -23,6 +23,8 @@
 #define DEPTH_SCALE_FACTOR_MAX 100
 #define NUM_FUNCTIONS 2
 #define BLUR_SIZE_MAX 100
+//if 1, contours must be square. smaller value allows for skinnier contours
+#define CONTOUR_ECCENTRICTY_THRESH 0.4
 
 using namespace std;
 using namespace cv;
@@ -32,8 +34,13 @@ using namespace cv;
 static void drawMotionIntensity(const cv::Mat&, cv::Mat&);
 static void drawOptFlowMap(const cv::Mat&, cv::Mat&,
         int, double, const cv::Scalar&);
-static void drawRectFromContours(cv::Mat&,
+static void drawRectsFromContours(cv::Mat&,
         std::vector<std::vector<cv::Point> >&);
+static void filterContoursByShape(std::vector<std::vector<cv::Point> > &, std::vector<std::vector<cv::Point> > &, float);
+static void filterContoursByScale(std::vector<std::vector<cv::Point> > &, std::vector<std::vector<cv::Point> > &, const cv::Mat&, const cv::Mat&);
+double findContourDepth(const cv::Mat &);
+double calcApproxSurfaceArea(const cv::Mat &, double);
+
 //get ride of erroneous black values
 //these happen by noise or when there is no surface reflecting back kinect IR
 static void threshBlack(const cv::Mat&, cv::Mat&);
@@ -49,6 +56,8 @@ class CopterTracker
     image_transport::Publisher image_pub;
     image_transport::Subscriber image_sub;
     std::vector<std::vector<cv::Point> > contours;
+    std::vector<std::vector<cv::Point> > contours_cand;
+    std::vector<std::vector<cv::Point> > contours_finalists;
 
 
     void callback_depth(const sensor_msgs::ImageConstPtr& msg);
@@ -60,16 +69,20 @@ class CopterTracker
     int function_toggle;
     int blur_size;
 
+    cv::Mat kernel;
+
     CopterTracker(ros::NodeHandle n): iTrans(n)
     {
         image_sub = iTrans.subscribe("/camera/depth/image", 1, &CopterTracker::callback_depth, this);
         image_pub = iTrans.advertise("/camera/depth_cleaned/image", 1);
 
-        edge_thresh_low = 8;
-        edge_thresh_high = 15;
+        edge_thresh_low = 32;
+        edge_thresh_high = 46;
         depth_scale_factor = 100/8;
         function_toggle = 0;
         blur_size = 7;
+        kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1));
+
         //algorithm_mode = FOFA; //intializes the algorithm to FOFA
     }
 
@@ -79,23 +92,31 @@ class CopterTracker
 
 void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
 {
-    cv_bridge::CvImagePtr frame_original_ptr;
+    cv_bridge::CvImagePtr depth_orig;
 
-//    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE,
-//            cv::Size(3,3), cv::Point(-1,-1));
 //    std::string label;
 
     try {
-        frame_original_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_32FC1);
+        depth_orig = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_32FC1);
     }
     catch (cv_bridge::Exception& e) {
         ROS_ERROR("cv_bridge exception: %s", e.what());
         return;
     }
 
+    //cv::waitKey(0);
+
+    double min;
+    double max;
+    minMaxLoc(depth_orig->image, &min, &max);
+    //ROS_INFO("\nmin: %lf\nmax: %lf", min, max);
+
+    //TODO take advantage of decimal pixel data before converting to uint8
+    //take depth frames centered at some depth d, with width w. then convert those frames to uint8
+
     //convert to grayscale and make a copy
     cv::Mat depth_img;
-    frame_original_ptr->image.convertTo(depth_img, CV_8UC1, 255/RANGE_MAX, 0);//scale by the max value and shift by 0
+    depth_orig->image.convertTo(depth_img, CV_8UC1, 255/RANGE_MAX, 0);//scale by the max value and shift by 0
 
 
 
@@ -117,13 +138,42 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
 
     cv::GaussianBlur(depth_img_cleaned, depth_img_cleaned, cv::Size(2+blur_size+!(blur_size%2), 2+blur_size+!(blur_size%2)), 9, cv::BORDER_DEFAULT);
 
-    Mat depth_img_edges;
+    Mat depth_img_edges(depth_img_cleaned.rows, depth_img_cleaned.cols, CV_8UC1);
     Canny(depth_img_cleaned, depth_img_edges, edge_thresh_low, edge_thresh_high);
+
+
+    //make edges thicker to help find better contours
+    cv::dilate(depth_img_edges, depth_img_edges, kernel, cv::Point(-1,-1), 4);
+    cv::findContours(depth_img_edges.clone(), contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
+    contours_cand.clear();
+    //filters based on shape
+    filterContoursByShape(contours_cand, contours, CONTOUR_ECCENTRICTY_THRESH);
+
+    Mat contour_img = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
+    drawRectsFromContours(contour_img, contours_cand);
 
     cv::waitKey(1);
     imshow("depth", depth_img);
     imshow("Depth: Cleaned-Up", depth_img_cleaned);
     imshow("Depth: Edges", depth_img_edges);
+
+    imshow("Candidate Contours", contour_img);
+
+    //Mat test_img = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
+    //drawContours(test_img, contours_cand, -1, 255, CV_FILLED);
+    //imshow("test", test_img);
+
+    contours_finalists.clear();
+    //filter based on scale (should be rough size of copter)
+    filterContoursByScale(contours_finalists, contours_cand, depth_orig->image, kernel); //TODO pass in depth_orig
+
+    Mat contour_img_finalists = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
+    drawRectsFromContours(contour_img_finalists, contours_finalists);
+
+    imshow("contour finalists", contour_img_finalists);
+
+
+
 
     //blur the image before applying algorithm
     //cv::GaussianBlur(frame_gray, frame_gray, cv::Size(7, 7), 7, cv::BORDER_DEFAULT);
@@ -664,46 +714,190 @@ static void drawMotionIntensity(const cv::Mat& flow, cv::Mat& A)
     }
 }
 
-static void drawRectFromContours(cv::Mat& frame, std::vector<std::vector<cv::Point> > &contours)
+static void drawRectsFromContours(cv::Mat& frame, std::vector<std::vector<cv::Point> > &contours)
 {
     if (contours.empty()) { return; }
-    //only draw rectangle on first contour
-    std::vector<cv::Point> contour = contours.front();
-    int maxSize = 0;
 
-    //find the largest contour
-    for (std::vector<std::vector<cv::Point> >::iterator it = contours.begin() ; it != contours.end(); ++it){
-        if (it->size() > maxSize){
-            contour = *it;
-            maxSize = it->size();
-        }
+    //draw all contours as boxes
+    for (std::vector<std::vector<cv::Point> >::iterator it = contours.begin() ; it != contours.end(); ++it){    
+        cv::rectangle(frame, boundingRect(*it), 255, 5);//cv::Point(minX, minY), cv::Point(maxX,maxY)
+
     }
 
-    int minX = INT_MAX;
-    int maxX = 0;
-    int minY = INT_MAX;
-    int maxY = 0;
-
-    cv::Point point;
-    for (int i = 0; i < contour.size(); i++){
-        point = contour.at(i);
-
-        if (point.x < minX){
-            minX = point.x;
-        }
-        if (point.x > maxX){
-            maxX = point.x;
-        }
-        if (point.y < minY){
-            minY = point.y;
-        }
-        if (point.y > maxY){
-            maxY = point.y;
-        }
-    }
-
-    cv::rectangle(frame, cv::Point(minX, minY), cv::Point(maxX,maxY), cv::Scalar(0,0,255), 5);
 }
+
+static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours_finalists, std::vector<std::vector<cv::Point> > &contours_cand, const cv::Mat& depth_img_orig, const cv::Mat& kernel)
+{
+    if (contours_cand.empty()) { return; }
+
+    float depth_average;
+    double scale_area;
+    cv::Scalar temp;
+    cv::Mat contour_mask = Mat::zeros(depth_img_orig.rows, depth_img_orig.cols, CV_8UC1);
+    std::vector<std::vector<cv::Point> > single_contour;
+
+    //search through all candidate contours
+    for (std::vector<std::vector<cv::Point> >::iterator it = contours_cand.begin() ; it != contours_cand.end(); ++it){
+
+        if (it->empty()) continue;
+        contour_mask = Mat::zeros(depth_img_orig.rows, depth_img_orig.cols, CV_8UC1);
+
+        //get contour mask
+        single_contour.push_back(*it);
+        drawContours(contour_mask, single_contour, -1, 1, CV_FILLED);
+
+        //erode to get exactly where the original contour was found (undo the dilation and try to leave the largest part)
+        cv::erode(contour_mask, contour_mask, kernel, cv::Point(-1,-1), 4+4);
+
+        imshow("contour mask", contour_mask*255);
+        cv::Mat contour_depth_F(depth_img_orig.rows, depth_img_orig.cols, CV_32FC1);
+        cv::Mat contour_mask_F(depth_img_orig.rows, depth_img_orig.cols, CV_32FC1);
+
+        contour_mask.convertTo(contour_mask_F, CV_32FC1);
+        contour_depth_F = depth_img_orig.mul(contour_mask_F);
+        //cv::Mat buff_U(depth_img_orig.rows, depth_img_orig.cols, CV_8UC1);
+        //depth_img_masked_F.convertTo(buff_U, CV_8UC1);
+
+        depth_average = findContourDepth(contour_depth_F);
+
+        //ROS_INFO("sum: %lf", sum);
+        //ROS_INFO("count: %d", count);
+
+
+        //TODO filter based on scale, not just depth
+        if (depth_average > 0){
+
+            scale_area = calcApproxSurfaceArea(contour_depth_F, depth_average);
+
+            ROS_INFO("depth: %.6f", depth_average);
+            contours_finalists.push_back(*it);
+        }
+        single_contour.pop_back();
+    }
+
+
+}
+
+//find good contours given all contours as input
+static void filterContoursByShape(std::vector<std::vector<cv::Point> > &good_contours, std::vector<std::vector<cv::Point> > &contours, float ratioThresh)
+{
+    if (contours.empty()) { return; }
+
+    cv::Rect rect;
+    float ratio;
+    std::vector<cv::Point> contour;
+
+    //search through all contours
+    for (std::vector<std::vector<cv::Point> >::iterator it = contours.begin() ; it != contours.end(); ++it){
+
+        if (it->empty()) continue;
+        contour = *it;
+        rect = boundingRect(contour);
+
+        if (rect.width == 0 || rect.height == 0) continue;
+
+        (rect.width > rect.height) ? (ratio = float(rect.height)/rect.width) : (ratio = float(rect.width)/rect.height);
+
+        //only add contours which are not too skinny or tall to good_contours
+        if (ratio > ratioThresh){
+            good_contours.push_back(contour);
+
+        }
+
+    }
+}
+
+double findContourDepth(const cv::Mat &contour_depth_F)
+{
+    double depth;
+    double min;
+    double max;
+    minMaxLoc(contour_depth_F, &min, &max);
+    cv::Mat contour_depth_U(contour_depth_F.rows, contour_depth_F.cols, CV_8UC1);
+    //ROS_INFO("\nmin masked: %lf\nmax masked: %lf", min, max);
+    contour_depth_F.convertTo(contour_depth_U, CV_8UC1, 255/RANGE_MAX, 0);
+    imshow("contour with depth", contour_depth_U);
+
+    float sum = 0;
+    int count = 0;
+    for(int i = 0; i < contour_depth_F.rows; i++) {
+        for(int j = 0; j < contour_depth_F.cols; j++) {
+
+            const float curr = contour_depth_F.at<float>(i, j);
+            if (curr == 0 || isnan(curr)) continue;
+            //ROS_INFO("curr: %lf", curr);
+
+            sum += curr;
+            count++;
+        }
+    }
+
+    (count == 0) ? (depth = 0) : (depth = sum/count);
+    return depth;
+}
+
+double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_average)
+{
+    double area = 0;
+
+    cv::Mat x_top, x_bottom, x_left, x_right;
+    cv::Mat x_bottom_cand, x_right_cand;
+
+    cv::Point top = cv::Point(-1,-1);
+    cv::Point left = cv::Point(-1,-1);
+    cv::Point bottom, right, bottom_cand, right_cand;
+
+    //find top, bottom, left, and right extreme points
+    //find top and bottom
+    for (int i = 0; i < contour_depth_F.rows; i++){
+        for (int j = 0; j < contour_depth_F.cols; j++){
+            const float curr = contour_depth_F.at<float>(i,j);
+            if (curr == 0) continue;
+
+            if (x_top.rows == 0){
+
+                //homogeneous image coordinates
+                float m[3][1] = {j, i, 1}; //TODO, might be row,col
+                x_top = cv::Mat(3,1,CV_32FC1, m);
+            }
+
+            //will be set to the last non-zero point
+            //bottom_cand = cv::Point(i,j);
+            float m[3][1] = {j, i, 1};
+            x_bottom_cand = cv::Mat(3,1,CV_32FC1, m);
+        }
+    }
+    x_bottom = x_bottom_cand;
+
+    //find left and right
+    for (int j = 0; j < contour_depth_F.cols; j++){
+        for (int i = 0; i < contour_depth_F.rows; i++){
+            const float curr = contour_depth_F.at<float>(i,j);
+            if (curr == 0) continue;
+
+            if (x_left.rows == 0){
+
+                //homogeneous image coordinates
+                float m[3][1] = {j, i, 1}; //TODO, might be row,col
+                x_left = cv::Mat(3,1,CV_32FC1, m);
+            }
+
+            //will be set to the last non-zero point
+            //bottom_cand = cv::Point(i,j);
+            float m[3][1] = {j, i, 1};
+            x_right_cand = cv::Mat(3,1,CV_32FC1, m);
+        }
+    }
+    x_right = x_right_cand;
+
+    //reproject top, bottom, left, and right using the average depth
+
+
+    //calculate the surface area of the plane intersecting the 4 3d points
+
+    return area;
+}
+
 
 int main(int argc, char **argv) {
     ros::init(argc, argv, "copter_tracker");
