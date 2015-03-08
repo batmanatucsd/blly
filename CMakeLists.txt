@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
     image_transport
 
 )
+find_package(Boost REQUIRED COMPONENTS thread)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -103,6 +104,7 @@ catkin_package(
 include_directories(
   ${catkin_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${Boost_INCLUDE_DIRS}
 )
 
 ## Declare a cpp library

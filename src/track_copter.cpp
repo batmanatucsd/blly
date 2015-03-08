@@ -11,6 +11,8 @@
 #include <cmath>
 #include <vector>
 
+#include <boost/thread/mutex.hpp>
+
 #define CROP_WIDTH 320
 #define CROP_HEIGHT 240
 
@@ -24,7 +26,12 @@
 #define NUM_FUNCTIONS 2
 #define BLUR_SIZE_MAX 100
 //if 1, contours must be square. smaller value allows for skinnier contours
-#define CONTOUR_ECCENTRICTY_THRESH 0.4
+#define CONTOUR_ECCENTRICTY_THRESH 0.3 //TODO look into the value for best approx
+#define IR_CAMERA_FOCAL_PX 580 //(focal point in pixels) //taken from wiki.ros.org/kinect_calibration/technical
+#define IR_CAMERA_FOCAL_PY 580 //TODO find actual focal length and calculate PX and PY based on pixel width and height (do not assume square pixel)
+
+#define SCALE_AREA_MIN 0.0001
+#define SCALE_AREA_MAX 0.04
 
 using namespace std;
 using namespace cv;
@@ -49,18 +56,29 @@ static void copyOutBlack(const cv::Mat&, cv::Mat&, float);
 static void interpOutBlack(const cv::Mat&, cv::Mat&, float);
 static void interp1D(cv::Mat&, int, int, int, int, int, int);
 
+static boost::mutex mutex;
 
 class CopterTracker
 {
+    //cv_bridge::CvImagePtr rgb_orig;
+    bool rgb_locked_writing;
+    bool rgb_locked_reading;
+    bool shared_contours_finalists_writing;
+    bool shared_contours_finalists_reading;
+
     image_transport::ImageTransport iTrans;
     image_transport::Publisher image_pub;
-    image_transport::Subscriber image_sub;
+    image_transport::Subscriber image_sub_depth;
+    image_transport::Subscriber image_sub_rgb;
+
     std::vector<std::vector<cv::Point> > contours;
     std::vector<std::vector<cv::Point> > contours_cand;
     std::vector<std::vector<cv::Point> > contours_finalists;
-
+    std::vector<std::vector<cv::Point> > shared_contours_finalists;
+    std::vector<std::vector<cv::Point> > contours_finalists_rgb;
 
     void callback_depth(const sensor_msgs::ImageConstPtr& msg);
+    void callback_rgb(const sensor_msgs::ImageConstPtr& msg);
 
     public:
     int edge_thresh_low;
@@ -73,7 +91,10 @@ class CopterTracker
 
     CopterTracker(ros::NodeHandle n): iTrans(n)
     {
-        image_sub = iTrans.subscribe("/camera/depth/image", 1, &CopterTracker::callback_depth, this);
+        //TODO possibly subscribe to rectified depth to improve reprojection accuracy
+        image_sub_depth = iTrans.subscribe("/camera/depth/image", 1, &CopterTracker::callback_depth, this);
+        image_sub_rgb = iTrans.subscribe("/camera/rgb/image_color", 1, &CopterTracker::callback_rgb, this);
+
         image_pub = iTrans.advertise("/camera/depth_cleaned/image", 1);
 
         edge_thresh_low = 32;
@@ -82,16 +103,31 @@ class CopterTracker
         function_toggle = 0;
         blur_size = 7;
         kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1));
+        rgb_locked_writing = false;
+        rgb_locked_reading = false;
+        bool shared_contours_finalists_writing = false;
+        bool shared_contours_finalists_reading = false;
 
         //algorithm_mode = FOFA; //intializes the algorithm to FOFA
     }
 
-
-
 };
 
 void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
-{
+{   
+    /*
+    cv::Mat gray_img;
+    //mutex.lock();
+    while(1){
+        if (rgb_locked_writing) continue;
+        rgb_locked_reading = true;
+        cvtColor(rgb_orig->image, gray_img, CV_RGB2GRAY);
+        rgb_locked_reading = false;
+        //mutex.unlock();
+        break;
+    }
+    */
+
     cv_bridge::CvImagePtr depth_orig;
 
 //    std::string label;
@@ -113,6 +149,9 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
 
     //TODO take advantage of decimal pixel data before converting to uint8
     //take depth frames centered at some depth d, with width w. then convert those frames to uint8
+    //sliding depth frme (focus on a depth range) and use histEQ on each slice
+
+    //TODO investigate a tracking algorithm to speed up detection and searching
 
     //convert to grayscale and make a copy
     cv::Mat depth_img;
@@ -157,7 +196,7 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     imshow("Depth: Cleaned-Up", depth_img_cleaned);
     imshow("Depth: Edges", depth_img_edges);
 
-    imshow("Candidate Contours", contour_img);
+    imshow("Candidate Contours: filtered by shape", contour_img);
 
     //Mat test_img = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
     //drawContours(test_img, contours_cand, -1, 255, CV_FILLED);
@@ -170,9 +209,13 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     Mat contour_img_finalists = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
     drawRectsFromContours(contour_img_finalists, contours_finalists);
 
-    imshow("contour finalists", contour_img_finalists);
+    imshow("contour finalists: filtered by shape and scale", contour_img_finalists);
 
-
+    if (!shared_contours_finalists_reading) {
+        shared_contours_finalists_writing = true;
+        shared_contours_finalists = contours_finalists;
+        shared_contours_finalists_writing = false;
+    }
 
 
     //blur the image before applying algorithm
@@ -238,6 +281,59 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     // Reset Contours
     contours.clear();
 */
+}
+
+void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
+{
+    //ROS_INFO("got rgb image");
+    cv_bridge::CvImagePtr rgb_orig;
+   /*
+    try {
+        //TODO make sure mutex is working
+        //mutex.lock();
+        while(1){
+            if (rgb_locked_reading) continue;
+            rgb_locked_writing = true;
+            rgb_orig = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_8UC3);
+            //mutex.unlock();
+            rgb_locked_writing = false;
+            break;
+        }
+    }
+    catch (cv_bridge::Exception& e) {
+        ROS_ERROR("cv_bridge exception: %s", e.what());
+        return;
+    }*/
+
+    try {
+        rgb_orig = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::TYPE_8UC3);
+    }
+    catch (cv_bridge::Exception& e) {
+        ROS_ERROR("cv_bridge exception: %s", e.what());
+        return;
+    }
+    cv::Mat gray_img;
+    cvtColor(rgb_orig->image, gray_img, CV_RGB2GRAY);
+
+    //TODO mutex lock to make this if statement obsolete
+    if (!shared_contours_finalists_writing){
+
+        shared_contours_finalists_reading = true;
+        contours_finalists_rgb = shared_contours_finalists;
+        shared_contours_finalists_reading = false;
+
+        //check to make sure it is not accessed before populated
+        //if (contours_finalists_rgb.empty()) return;
+
+        //Mat contour_img_finalists = Mat::zeros(gray_img.rows, gray_img.cols, CV_8UC1);
+        //drawRectsFromContours(contour_img_finalists, contours_finalists_rgb);
+        drawRectsFromContours(gray_img, contours_finalists_rgb);
+
+    }
+
+    imshow("gray image: contours finalists", gray_img);
+
+
 }
 
 static void threshBlack(const cv::Mat& depth, cv::Mat& depth_cleaned){
@@ -769,8 +865,14 @@ static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours
 
             scale_area = calcApproxSurfaceArea(contour_depth_F, depth_average);
 
-            ROS_INFO("depth: %.6f", depth_average);
-            contours_finalists.push_back(*it);
+            //ROS_INFO("depth: %.6f", depth_average);
+            //ROS_INFO("area: %.6f\n", scale_area);
+
+            if (scale_area >= SCALE_AREA_MIN && scale_area <= SCALE_AREA_MAX){
+                contours_finalists.push_back(*it);
+                ROS_INFO("valid area: %.6f\n", scale_area);
+            }
+
         }
         single_contour.pop_back();
     }
@@ -847,53 +949,105 @@ double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_averag
     cv::Point left = cv::Point(-1,-1);
     cv::Point bottom, right, bottom_cand, right_cand;
 
+    cv::Point center_cam = cv::Point(contour_depth_F.cols/2, contour_depth_F.rows/2);
+
+    //3d world coordinates that will be reprojected via depth_average
+    cv::Point3f top_w, bottom_w, left_w, right_w;
+
     //find top, bottom, left, and right extreme points
     //find top and bottom
     for (int i = 0; i < contour_depth_F.rows; i++){
         for (int j = 0; j < contour_depth_F.cols; j++){
             const float curr = contour_depth_F.at<float>(i,j);
-            if (curr == 0) continue;
+            if (curr == 0 || isnan(curr)) continue; //TODO why is NaN here???
 
-            if (x_top.rows == 0){
+            if (top.x == -1){
 
                 //homogeneous image coordinates
-                float m[3][1] = {j, i, 1}; //TODO, might be row,col
-                x_top = cv::Mat(3,1,CV_32FC1, m);
+                //float m[3][1] = {j, i, 1}; //TODO, might be row,col
+                //x_top = cv::Mat(3,1,CV_32FC1, m);
+                top = cv::Point(j,i); //stores point in (x,y)
+                ROS_DEBUG("camera: top at: (%d, %d)", top.x, top.y);
             }
 
             //will be set to the last non-zero point
             //bottom_cand = cv::Point(i,j);
-            float m[3][1] = {j, i, 1};
-            x_bottom_cand = cv::Mat(3,1,CV_32FC1, m);
+            //float m[3][1] = {j, i, 1};
+            //x_bottom_cand = cv::Mat(3,1,CV_32FC1, m);
+            bottom_cand = cv::Point(j,i);
         }
     }
-    x_bottom = x_bottom_cand;
+    //x_bottom = x_bottom_cand;
+    bottom = bottom_cand;
+    ROS_DEBUG("camera: bottom at: (%d, %d)", bottom.x, bottom.y);
 
     //find left and right
     for (int j = 0; j < contour_depth_F.cols; j++){
         for (int i = 0; i < contour_depth_F.rows; i++){
             const float curr = contour_depth_F.at<float>(i,j);
-            if (curr == 0) continue;
+            if (curr == 0 || isnan(curr)) continue;
 
-            if (x_left.rows == 0){
+            if (left.x == -1){
 
                 //homogeneous image coordinates
-                float m[3][1] = {j, i, 1}; //TODO, might be row,col
-                x_left = cv::Mat(3,1,CV_32FC1, m);
+                //float m[3][1] = {j, i, 1}; //TODO, might be row,col
+                //x_left = cv::Mat(3,1,CV_32FC1, m);
+                left = cv::Point(j,i);
+                ROS_DEBUG("camera: left at: (%d, %d)", left.x, left.y);
             }
 
             //will be set to the last non-zero point
             //bottom_cand = cv::Point(i,j);
-            float m[3][1] = {j, i, 1};
-            x_right_cand = cv::Mat(3,1,CV_32FC1, m);
+            //float m[3][1] = {j, i, 1};
+            //x_right_cand = cv::Mat(3,1,CV_32FC1, m);
+            right_cand = cv::Point(j,i);
         }
     }
-    x_right = x_right_cand;
+    //x_right = x_right_cand;
+    right = right_cand;
+    ROS_DEBUG("camera: right at: (%d, %d)", right.x, right.y);
 
     //reproject top, bottom, left, and right using the average depth
+    top_w = cv::Point3f((top.x - center_cam.x)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                        (top.y - center_cam.y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                         depth_average);
+    bottom_w = cv::Point3f((bottom.x - center_cam.x)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                        (bottom.y - center_cam.y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                         depth_average);
+    left_w = cv::Point3f((left.x - center_cam.x)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                        (left.y - center_cam.y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                         depth_average);
+    right_w = cv::Point3f((right.x - center_cam.x)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                        (right.y - center_cam.y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                         depth_average);
 
+    ROS_DEBUG("world: top at: (%lf, %lf)", top_w.x, top_w.y);
+    ROS_DEBUG("world: bottom at: (%lf, %lf)", bottom_w.x, bottom_w.y);
+    ROS_DEBUG("world: left at: (%lf, %lf)", left_w.x, left_w.y);
+    ROS_DEBUG("world: right at: (%lf, %lf)", right_w.x, right_w.y);
+
+
+    cv::Mat four_points_c = Mat::zeros(contour_depth_F.rows, contour_depth_F.cols, CV_8UC1);
+    four_points_c.at<uchar>(top.y,top.x) = 255;
+    four_points_c.at<uchar>(bottom.y,bottom.x) = 255;
+    four_points_c.at<uchar>(left.y,left.x) = 255;
+    four_points_c.at<uchar>(right.y,right.x) = 255;
+/*
+    cv::Mat four_points_w = Mat::zeros(contour_depth_F.rows, contour_depth_F.cols, CV_8UC1);
+    four_points_w.at<uchar>(top_w.y,top_w.x) = 255;
+    four_points_w.at<uchar>(bottom_w.y,bottom_w.x) = 255;
+    four_points_w.at<uchar>(left_w.y,left_w.x) = 255;
+    four_points_w.at<uchar>(right_w.y,right_w.x) = 255;
+*/
+    cv::dilate(four_points_c, four_points_c, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1)), cv::Point(-1,-1), 4);
+    //cv::dilate(four_points_w, four_points_w, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1)), cv::Point(-1,-1), 4);
+
+
+    //imshow("camera: contour extreme pixels", four_points_c);
+    //imshow("world: contour extreme pixels", four_points_w);
 
     //calculate the surface area of the plane intersecting the 4 3d points
+    area = (bottom_w.y - top_w.y)*(right_w.x - left_w.x);
 
     return area;
 }
