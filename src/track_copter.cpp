@@ -13,8 +13,8 @@
 
 #include <boost/thread/mutex.hpp>
 
-#define CROP_WIDTH 320
-#define CROP_HEIGHT 240
+#define RGB_WIDTH 640
+#define RGB_HEIGHT 480
 
 #define THRESH_MAG 3
 
@@ -33,16 +33,20 @@
 #define SCALE_AREA_MIN 0.0001
 #define SCALE_AREA_MAX 0.04
 
+#define CASCADE_WIDTH 100 //pixel width and height for cascade classifier. images will be cropped to this size
+#define CASCADE_HEIGHT 40
+
 using namespace std;
 using namespace cv;
 
 
 // Forward Declaration
 static void drawMotionIntensity(const cv::Mat&, cv::Mat&);
-static void drawOptFlowMap(const cv::Mat&, cv::Mat&,
-        int, double, const cv::Scalar&);
-static void drawRectsFromContours(cv::Mat&,
-        std::vector<std::vector<cv::Point> >&);
+static void drawOptFlowMap(const cv::Mat&, cv::Mat&, int, double, const cv::Scalar&);
+static void drawRectsFromContours(cv::Mat&, std::vector<std::vector<cv::Point> >&);
+static void getCroppedImagesFromContours(cv::Mat &, std::vector<cv::Mat> &, std::vector<std::vector<cv::Point> > &);
+static void viewImages(std::vector<cv::Mat> &);
+
 static void filterContoursByShape(std::vector<std::vector<cv::Point> > &, std::vector<std::vector<cv::Point> > &, float);
 static void filterContoursByScale(std::vector<std::vector<cv::Point> > &, std::vector<std::vector<cv::Point> > &, const cv::Mat&, const cv::Mat&);
 double findContourDepth(const cv::Mat &);
@@ -76,6 +80,8 @@ class CopterTracker
     std::vector<std::vector<cv::Point> > contours_finalists;
     std::vector<std::vector<cv::Point> > shared_contours_finalists;
     std::vector<std::vector<cv::Point> > contours_finalists_rgb;
+
+    std::vector<cv::Mat> croppedFinalists;
 
     void callback_depth(const sensor_msgs::ImageConstPtr& msg);
     void callback_rgb(const sensor_msgs::ImageConstPtr& msg);
@@ -327,12 +333,15 @@ void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
 
         //Mat contour_img_finalists = Mat::zeros(gray_img.rows, gray_img.cols, CV_8UC1);
         //drawRectsFromContours(contour_img_finalists, contours_finalists_rgb);
-        drawRectsFromContours(gray_img, contours_finalists_rgb);
+        //drawRectsFromContours(gray_img, contours_finalists_rgb);
+        getCroppedImagesFromContours(gray_img, croppedFinalists, contours_finalists_rgb);
+
+        viewImages(croppedFinalists);
 
     }
 
-    imshow("gray image: contours finalists", gray_img);
-
+    //imshow("gray image: contours finalists", gray_img);
+    croppedFinalists.clear();
 
 }
 
@@ -822,6 +831,56 @@ static void drawRectsFromContours(cv::Mat& frame, std::vector<std::vector<cv::Po
 
 }
 
+static void getCroppedImagesFromContours(cv::Mat &ipImage, std::vector<cv::Mat> &opImages, std::vector<std::vector<cv::Point> > &contours){
+
+    if (contours.empty()) { return; }
+
+    float width_adjusted, bounding_rect_center_x, right_bound, left_bound;
+    cv::Rect rect_adjusted;
+    cv::Mat imageCropped;
+
+    //crop all contours as images of the same size
+    //TODO maybe determine copter orientation: ie: if viewing front, back, left or right sides of copter and crop accordingly
+    for (std::vector<std::vector<cv::Point> >::iterator it = contours.begin() ; it != contours.end(); ++it){
+        cv::Rect bounding_rect = boundingRect(*it);
+
+        //calculate width such that ratio is maintained
+        width_adjusted = bounding_rect.height*float(CASCADE_WIDTH)/CASCADE_HEIGHT;
+
+        //case where copter is really close to camera
+        if  (width_adjusted > RGB_WIDTH) continue;
+
+        bounding_rect_center_x = bounding_rect.x + float(bounding_rect.width)/2;
+        right_bound = bounding_rect_center_x + float(width_adjusted)/2 ;
+        left_bound = bounding_rect_center_x - float(width_adjusted)/2;
+
+        //create an adjusted rectangle with the new width and height from bounding_rect
+        //make sure new rect doesn't go out of bounds of the image. shift appropriately
+        if (right_bound > RGB_WIDTH){
+
+            rect_adjusted = cv::Rect(left_bound - (right_bound - RGB_WIDTH), bounding_rect.y, width_adjusted, bounding_rect.height);
+
+        }
+        else if (left_bound < 0){
+
+            rect_adjusted = cv::Rect(left_bound - left_bound, bounding_rect.y, width_adjusted, bounding_rect.height);
+        }
+        else {
+            rect_adjusted = cv::Rect(left_bound, bounding_rect.y, width_adjusted, bounding_rect.height);
+        }
+
+
+        //crops image
+        imageCropped = ipImage(rect_adjusted);
+
+        //resize
+        cv::resize(imageCropped, imageCropped, cv::Size(CASCADE_WIDTH, CASCADE_HEIGHT));
+        opImages.push_back(imageCropped);
+
+    }
+
+}
+
 static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours_finalists, std::vector<std::vector<cv::Point> > &contours_cand, const cv::Mat& depth_img_orig, const cv::Mat& kernel)
 {
     if (contours_cand.empty()) { return; }
@@ -1052,6 +1111,18 @@ double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_averag
     return area;
 }
 
+static void viewImages(std::vector<cv::Mat> & images){
+
+    if (images.empty()) { return; }
+
+    //crop all contours as images of the same size
+    //TODO maybe determine copter orientation: ie: if viewing front, back, left or right sides of copter and crop accordingly
+    for (std::vector<cv::Mat>::iterator it = images.begin() ; it != images.end(); ++it){
+
+        imshow("cropped Images", *it);
+    }
+
+}
 
 int main(int argc, char **argv) {
     ros::init(argc, argv, "copter_tracker");
