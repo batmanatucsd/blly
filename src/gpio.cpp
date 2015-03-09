@@ -8,8 +8,10 @@
 #include <unistd.h>
 
 #include "ros/ros.h"
+#include "std_msgs/Int32.h"
 
 #define GPIO_EXPORT_PATH    "/sys/class/gpio/export"
+#define GPIO_UNEXPORT_PATH  "/sys/class/gpio/unexport"
 #define GPIO_DIR_PATH       "/sys/class/gpio/gpio%d/direction"
 #define GPIO_VALUE_PATH     "/sys/class/gpio/gpio%d/value"
 
@@ -64,6 +66,9 @@ GPIOPin::GPIOPin(GPIO_PINS pin, const char* pinIO)
 GPIOPin::~GPIOPin()
 {
     close(fileDesc);
+    fileDesc = open(GPIO_EXPORT_PATH, O_WRONLY);
+    write(fileDesc, hwPinId, sizeof(hwPinId));
+    close(fileDesc);
 }
 
 void GPIOPin::setPin(int state)
@@ -79,9 +84,9 @@ void GPIOPin::setPin(int state)
 void pinCallback(const std_msgs::Int32::ConstPtr& msg)
 {
     memset(PIN_VALUES, GPIO_LOW, sizeof(PIN_VALUES));
-    if (!(msg < 0 || msg > sizeof(PIN_VALUES)/sizeof(int))) {
-        PIN_VALUES[msg] = GPIO_HIGH;
-        ROS_INFO("%d is now on", msg);
+    if (!(msg->data < 0 || msg->data > sizeof(PIN_VALUES)/sizeof(int))) {
+        PIN_VALUES[msg->data] = GPIO_HIGH;
+        ROS_INFO("%d is now on", msg->data);
     }
 }
 

@@ -1,4 +1,5 @@
 #include "ros/ros.h"
+#include "std_msgs/Int32.h"
 
 #include <sstream>
 
@@ -12,7 +13,9 @@ int main (int argc, char **argv)
 
     int count = 0;
     while (ros::ok()) {
-        talker_pub.publish(count);
+	std_msgs::Int32 msg;
+	msg.data = count;
+        talker_pub.publish(msg);
 
         ROS_INFO("%d", count);
 
