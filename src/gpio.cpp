@@ -109,10 +109,10 @@ int main (int argc, char *argv[])
     GPIOPin pin7(GPIO_7, GPIO_OUT);
 
     while (ros::ok()) {
-        pin1.setPin(PIN_VALUES[0]);
-        pin2.setPin(PIN_VALUES[1]);
-        pin3.setPin(PIN_VALUES[2]);
-        pin4.setPin(PIN_VALUES[3]);
+        pin1.setPin(PIN_VALUES[1]);
+        pin2.setPin(PIN_VALUES[0]);
+        pin3.setPin(PIN_VALUES[3]);
+        pin4.setPin(PIN_VALUES[2]);
         pin7.setPin(PIN_VALUES[4]);
         ros::spinOnce();
         loop_rate.sleep();
