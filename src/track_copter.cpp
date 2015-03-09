@@ -75,11 +75,11 @@ class CopterTracker
     image_transport::Subscriber image_sub_depth;
     image_transport::Subscriber image_sub_rgb;
 
-    std::vector<std::vector<cv::Point>> contours;
-    std::vector<std::vector<cv::Point>> contours_cand;
-    std::vector<std::vector<cv::Point>> contours_finalists;
-    std::vector<std::vector<cv::Point>> shared_contours_finalists;
-    std::vector<std::vector<cv::Point>> contours_finalists_rgb;
+    std::vector<std::vector<cv::Point> > contours;
+    std::vector<std::vector<cv::Point> > contours_cand;
+    std::vector<std::vector<cv::Point> > contours_finalists;
+    std::vector<std::vector<cv::Point> > shared_contours_finalists;
+    std::vector<std::vector<cv::Point> > contours_finalists_rgb;
 
     std::vector<cv::Mat> croppedFinalists;
 

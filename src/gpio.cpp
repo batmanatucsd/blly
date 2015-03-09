@@ -44,7 +44,7 @@ GPIOPin::GPIOPin(GPIO_PINS pin, const char* pinIO)
 
     hwPinId = pin;
     // setup export
-    fileDesc = open(GPIO_EXPORT_PATH, O_RDWR);
+    fileDesc = open(GPIO_EXPORT_PATH, O_WRONLY);
     memset(path, 0, sizeof(path));
     snprintf(path, sizeof(path), "%d", hwPinId);
     write(fileDesc, path, strlen(path));
@@ -52,7 +52,7 @@ GPIOPin::GPIOPin(GPIO_PINS pin, const char* pinIO)
     // setup signal direction
     memset(path, 0, sizeof(path));
     snprintf(path, sizeof(path), GPIO_DIR_PATH, hwPinId);
-    fileDesc = open(path, O_RDWR);
+    fileDesc = open(path, O_WRONLY);
     write(fileDesc, pinIO, sizeof(const char*));
     close(fileDesc);
     // open descriptor to value
@@ -70,12 +70,13 @@ void GPIOPin::setPin(int state)
 {
     char buffer[4];
     memset(buffer, 0, sizeof(buffer));
-    snprintf(buffer, sizeof(buffer), "%c", state);
+    snprintf(buffer, sizeof(buffer), "%d", state);
+    ROS_INFO("Setting pin %d to %s", hwPinId, buffer);
     lseek(fileDesc, 0, SEEK_SET);
-    write(fileDesc, buffer, sizeof(buffer));
+    write(fileDesc, buffer, strlen(buffer));
 }
 
-void chatterCallback(const std_msgs::Int32::ConstPtr& msg)
+void pinCallback(const std_msgs::Int32::ConstPtr& msg)
 {
     memset(PIN_VALUES, GPIO_LOW, sizeof(PIN_VALUES));
     if (!(msg < 0 || msg > sizeof(PIN_VALUES)/sizeof(int))) {
@@ -89,7 +90,7 @@ int main (int argc, char *argv[])
 {
     ros::init(argc, argv, "gpio_controller");
     ros::NodeHandle n;
-    ros::Subscriber gpio_sub = n.subscribe<std_msgs::Int32>("/gpio_ctl", 10, &handlePin);
+    ros::Subscriber gpio_sub = n.subscribe<std_msgs::Int32>("/gpio_ctl", 10, &pinCallback);
 
     ros::Rate loop_rate(1);
 
