@@ -66,9 +66,9 @@ GPIOPin::GPIOPin(GPIO_PINS pin, const char* pinIO)
 GPIOPin::~GPIOPin()
 {
     close(fileDesc);
-    fileDesc = open(GPIO_EXPORT_PATH, O_WRONLY);
-    write(fileDesc, hwPinId, sizeof(hwPinId));
-    close(fileDesc);
+    //fileDesc = open(GPIO_EXPORT_PATH, O_WRONLY);
+    //write(fileDesc, hwPinId, sizeof(hwPinId));
+    //close(fileDesc);
 }
 
 void GPIOPin::setPin(int state)
@@ -112,8 +112,8 @@ int main (int argc, char *argv[])
         pin1.setPin(PIN_VALUES[0]);
         pin2.setPin(PIN_VALUES[1]);
         pin3.setPin(PIN_VALUES[2]);
-        pin4.setPin(PIN_VALUES[4]);
-        pin7.setPin(PIN_VALUES[5]);
+        pin4.setPin(PIN_VALUES[3]);
+        pin7.setPin(PIN_VALUES[4]);
         ros::spinOnce();
         loop_rate.sleep();
     }
