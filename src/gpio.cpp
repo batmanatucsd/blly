@@ -9,6 +9,7 @@
 
 #include "ros/ros.h"
 #include "std_msgs/Int32.h"
+#include "geometry_msgs/Point.h"
 
 #define GPIO_EXPORT_PATH    "/sys/class/gpio/export"
 #define GPIO_UNEXPORT_PATH  "/sys/class/gpio/unexport"
@@ -81,12 +82,28 @@ void GPIOPin::setPin(int state)
     write(fileDesc, buffer, strlen(buffer));
 }
 
-void pinCallback(const std_msgs::Int32::ConstPtr& msg)
+void pinCallback(const geometry_msgs::Point::ConstPtr& msg)
 {
     memset(PIN_VALUES, GPIO_LOW, sizeof(PIN_VALUES));
+    /*
     if (!(msg->data < 0 || msg->data > sizeof(PIN_VALUES)/sizeof(int))) {
         PIN_VALUES[msg->data] = GPIO_HIGH;
         ROS_INFO("%d is now on", msg->data);
+    }
+    */
+    // Calculate the angle
+    int ptr_angle;
+    // Determine which block the point falls into
+    if (ptr_angle < -17.1) {
+        PIN_VALUES[0] = GPIO_HIGH;
+    } else if (ptr_angle < -5.7) {
+        PIN_VALUES[1] = GPIO_HIGH;
+    } else if (ptr_angle < 5.7) {
+        PIN_VALUES[2] = GPIO_HIGH;
+    } else if (ptr_angle < 17.1) {
+        PIN_VALUES[3] = GPIO_HIGH;
+    } else {
+        PIN_VALUES[4] = GPIO_HIGH;
     }
 }
 
@@ -95,7 +112,7 @@ int main (int argc, char *argv[])
 {
     ros::init(argc, argv, "gpio_controller");
     ros::NodeHandle n;
-    ros::Subscriber gpio_sub = n.subscribe<std_msgs::Int32>("/gpio_ctl", 10, &pinCallback);
+    ros::Subscriber gpio_sub = n.subscribe<geometry_msgs::Point>("/gpio_ctl", 10, &pinCallback);
 
     ros::Rate loop_rate(1);
 
