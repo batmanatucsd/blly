@@ -1,5 +1,6 @@
 #include "ros/ros.h"
 
+#include <geometry_msgs/Point.h>
 #include <image_transport/image_transport.h>
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.h>
@@ -7,18 +8,24 @@
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/video/tracking.hpp>
 #include <opencv2/video/background_segm.hpp>
+#include <opencv2/objdetect/objdetect.hpp>
 
 #include <cmath>
 #include <vector>
 
 #include <boost/thread/mutex.hpp>
+#include <string>
 
 #define RGB_WIDTH 640
 #define RGB_HEIGHT 480
 
 #define THRESH_MAG 3
 
-#define RANGE_MAX 9.757 //TODO find real max based on range of sensor (mm or meters)
+#define RANGE_MAX 9.757 //TODO find real max and min based on range of sensor (mm or meters)
+#define RANGE_MIN 0.01
+#define SLICE_DEPTH 1.0
+
+#define DEPTH_OF_FOCUS_MAX 100
 #define EDGE_LOW_MAX 100
 #define EDGE_HIGH_MAX 100
 
@@ -35,6 +42,10 @@
 
 #define CASCADE_WIDTH 100 //pixel width and height for cascade classifier. images will be cropped to this size
 #define CASCADE_HEIGHT 40
+#define TRAIN_CASCADE 0 //false
+#define TRAIN_PATH_NEG "//home/frank/turtlebot/src/blly/src/neg/"
+#define TRAIN_PATH_POS "//home/frank/turtlebot/src/blly/src/pos/"
+#define COPTER_CLASSIFIER_PATH "//home/frank/turtlebot/src/blly/src/classifiers/copter_all_500_500/cascade.xml"
 
 using namespace std;
 using namespace cv;
@@ -45,12 +56,20 @@ static void drawMotionIntensity(const cv::Mat&, cv::Mat&);
 static void drawOptFlowMap(const cv::Mat&, cv::Mat&, int, double, const cv::Scalar&);
 static void drawRectsFromContours(cv::Mat&, std::vector<std::vector<cv::Point> >&);
 static void getCroppedImagesFromContours(cv::Mat &, std::vector<cv::Mat> &, std::vector<std::vector<cv::Point> > &);
-static void viewImages(std::vector<cv::Mat> &);
+
+static void getDepthOfFocus(const cv::Mat&, cv::Mat&, double, double);
+
+
+static void viewImages(std::vector<cv::Mat> &, string, int&, int&, bool&);
+static void viewImages(std::vector<cv::Mat> &, string);
+
 
 static void filterContoursByShape(std::vector<std::vector<cv::Point> > &, std::vector<std::vector<cv::Point> > &, float);
-static void filterContoursByScale(std::vector<std::vector<cv::Point> > &, std::vector<std::vector<cv::Point> > &, const cv::Mat&, const cv::Mat&);
+static void filterContoursByScale(std::vector<std::vector<cv::Point> > &, std::vector<cv::Point3f> &, std::vector<std::vector<cv::Point> > &, const cv::Mat&, const cv::Mat&);
+cv::Point3f filterByAppearance(std::vector<cv::Mat> &, std::vector<cv::Point3f> &, std::vector<cv::Mat> &, cv::CascadeClassifier &);// Ptr<FeatureEvaluator>&
+
 double findContourDepth(const cv::Mat &);
-double calcApproxSurfaceArea(const cv::Mat &, double);
+double calcApproxSurfaceArea(const cv::Mat &, double, cv::Point3f &);
 
 //get ride of erroneous black values
 //these happen by noise or when there is no surface reflecting back kinect IR
@@ -71,7 +90,11 @@ class CopterTracker
     bool shared_contours_finalists_reading;
 
     image_transport::ImageTransport iTrans;
-    image_transport::Publisher image_pub;
+
+    //image_transport::Publisher image_pub;
+    ros::Publisher copter_center_3d_pub;
+    ros::Publisher copter_center_2d_pub;
+
     image_transport::Subscriber image_sub_depth;
     image_transport::Subscriber image_sub_rgb;
 
@@ -81,10 +104,21 @@ class CopterTracker
     std::vector<std::vector<cv::Point> > shared_contours_finalists;
     std::vector<std::vector<cv::Point> > contours_finalists_rgb;
 
-    std::vector<cv::Mat> croppedFinalists;
+    std::vector<cv::Point3f> centers_3d_finalists;
+    std::vector<cv::Point3f> shared_centers_3d_finalists;
+    std::vector<cv::Point3f> centers_3d_finalists_rgb;
+
+
+    std::vector<cv::Mat> cropped_finalists;
+    std::vector<cv::Mat> copters;
+
+
+    int numPos, numNeg;
 
     void callback_depth(const sensor_msgs::ImageConstPtr& msg);
     void callback_rgb(const sensor_msgs::ImageConstPtr& msg);
+
+
 
     public:
     int edge_thresh_low;
@@ -92,6 +126,11 @@ class CopterTracker
     int depth_scale_factor;
     int function_toggle;
     int blur_size;
+    bool training_cascade;
+    int depth_of_focus;
+
+    cv::CascadeClassifier copter_classifier;
+    Ptr<FeatureEvaluator> feval;
 
     cv::Mat kernel;
 
@@ -101,18 +140,30 @@ class CopterTracker
         image_sub_depth = iTrans.subscribe("/camera/depth/image", 1, &CopterTracker::callback_depth, this);
         image_sub_rgb = iTrans.subscribe("/camera/rgb/image_color", 1, &CopterTracker::callback_rgb, this);
 
-        image_pub = iTrans.advertise("/camera/depth_cleaned/image", 1);
+        //image_pub = iTrans.advertise("/camera/depth_cleaned/image", 1);
+        copter_center_3d_pub = n.advertise<geometry_msgs::Point>("copter_center_3d", 1);
+        copter_center_2d_pub = n.advertise<geometry_msgs::Point>("copter_center_2d", 1);
 
         edge_thresh_low = 32;
         edge_thresh_high = 46;
         depth_scale_factor = 100/8;
         function_toggle = 0;
         blur_size = 7;
+        depth_of_focus = 10;
         kernel = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1));
         rgb_locked_writing = false;
         rgb_locked_reading = false;
-        bool shared_contours_finalists_writing = false;
-        bool shared_contours_finalists_reading = false;
+        //shared_contours_finalists_writing = false;
+        //shared_contours_finalists_reading = false;
+
+        numPos = 0;
+        numNeg = 0;
+        training_cascade = TRAIN_CASCADE;
+
+        if( !copter_classifier.load(COPTER_CLASSIFIER_PATH) ){
+            ROS_INFO("--(!)Error loading face cascade");
+        }
+        feval = FeatureEvaluator::create(1);//TODO might be 1 or 2. enum HAAR or LBP
 
         //algorithm_mode = FOFA; //intializes the algorithm to FOFA
     }
@@ -163,7 +214,12 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     cv::Mat depth_img;
     depth_orig->image.convertTo(depth_img, CV_8UC1, 255/RANGE_MAX, 0);//scale by the max value and shift by 0
 
+    cv::Mat depth_img_dof;
+    double center = RANGE_MIN + SLICE_DEPTH/2 + double(depth_of_focus)/DEPTH_OF_FOCUS_MAX*(RANGE_MAX - (RANGE_MIN + SLICE_DEPTH));
+    getDepthOfFocus(depth_orig->image, depth_img_dof, center, SLICE_DEPTH);
 
+    imshow("Depth of Focus", depth_img_dof);
+    cv::waitKey(1);
 
     cv::Mat depth_img_cleaned = depth_img.clone(); //copy depth_img
     //clean up the depth image by making erroneous black pixels white
@@ -197,7 +253,6 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     Mat contour_img = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
     drawRectsFromContours(contour_img, contours_cand);
 
-    cv::waitKey(1);
     imshow("depth", depth_img);
     imshow("Depth: Cleaned-Up", depth_img_cleaned);
     imshow("Depth: Edges", depth_img_edges);
@@ -209,21 +264,28 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     //imshow("test", test_img);
 
     contours_finalists.clear();
+    centers_3d_finalists.clear();
     //filter based on scale (should be rough size of copter)
-    filterContoursByScale(contours_finalists, contours_cand, depth_orig->image, kernel); //TODO pass in depth_orig
+    filterContoursByScale(contours_finalists, centers_3d_finalists, contours_cand, depth_orig->image, kernel);
 
     Mat contour_img_finalists = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
     drawRectsFromContours(contour_img_finalists, contours_finalists);
 
     imshow("contour finalists: filtered by shape and scale", contour_img_finalists);
+    for (std::vector<cv::Point3f>::iterator it = centers_3d_finalists.begin() ; it != centers_3d_finalists.end(); ++it){
+        cv::Point3f p = *it;
+        //ROS_INFO("center finalist: (%lf, %lf, %lf)", p.x, p.y, p.z);
+    }
+
 
     if (!shared_contours_finalists_reading) {
         shared_contours_finalists_writing = true;
         shared_contours_finalists = contours_finalists;
+        shared_centers_3d_finalists = centers_3d_finalists;
         shared_contours_finalists_writing = false;
     }
 
-
+    //cv::waitKey(0);
     //blur the image before applying algorithm
     //cv::GaussianBlur(frame_gray, frame_gray, cv::Size(7, 7), 7, cv::BORDER_DEFAULT);
 /*
@@ -321,11 +383,15 @@ void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
     cv::Mat gray_img;
     cvtColor(rgb_orig->image, gray_img, CV_RGB2GRAY);
 
+    //TODO test if bluring yeilds better results
+    cv::GaussianBlur(gray_img, gray_img, cv::Size(3,3), 3, cv::BORDER_DEFAULT);
+
     //TODO mutex lock to make this if statement obsolete
     if (!shared_contours_finalists_writing){
 
         shared_contours_finalists_reading = true;
         contours_finalists_rgb = shared_contours_finalists;
+        centers_3d_finalists_rgb = shared_centers_3d_finalists;
         shared_contours_finalists_reading = false;
 
         //check to make sure it is not accessed before populated
@@ -334,14 +400,85 @@ void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
         //Mat contour_img_finalists = Mat::zeros(gray_img.rows, gray_img.cols, CV_8UC1);
         //drawRectsFromContours(contour_img_finalists, contours_finalists_rgb);
         //drawRectsFromContours(gray_img, contours_finalists_rgb);
-        getCroppedImagesFromContours(gray_img, croppedFinalists, contours_finalists_rgb);
+        getCroppedImagesFromContours(gray_img, cropped_finalists, contours_finalists_rgb);
 
-        viewImages(croppedFinalists);
+        viewImages(cropped_finalists, string("cropped Finalists"), numPos, numNeg, training_cascade);
+
+        //croppedFinalists.clear();//testing entire image
+        //croppedFinalists.push_back(gray_img);
+        if (!training_cascade){
+            //send croppedFinalists to cascade classifier for final filtering
+            cv::Point3f copter_center_3d = filterByAppearance(cropped_finalists, centers_3d_finalists_rgb, copters, copter_classifier);//feval
+            viewImages(copters, string("copters"));
+            if (copter_center_3d.x != 0 || copter_center_3d.y != 0 || copter_center_3d.z != 0){
+                //ROS_INFO("Copter found at: (%lf, %lf, %lf)", copter_center_3d.x, copter_center_3d.y, copter_center_3d.z);
+                //TODO publish the location of the copter. also publish it in image pixels by projecting to image plane
+                cv::Point center_cam = cv::Point(gray_img.cols/2, gray_img.rows/2);
+                cv::Point copter_center_2d = cv::Point(copter_center_3d.x/copter_center_3d.z*IR_CAMERA_FOCAL_PX + center_cam.x, copter_center_3d.y/copter_center_3d.z*IR_CAMERA_FOCAL_PY + center_cam.y);
+                //ROS_INFO("Pixel location: (%d, %d)", copter_center_2d.x, copter_center_2d.y);
+
+                geometry_msgs::Point msg_3d;
+                msg_3d.x = copter_center_3d.x;
+                msg_3d.y = copter_center_3d.y;
+                msg_3d.z = copter_center_3d.z;
+
+                copter_center_3d_pub.publish(msg_3d);
+
+                geometry_msgs::Point msg_2d;
+                msg_2d.x = copter_center_2d.x;
+                msg_2d.y = copter_center_2d.y;
+                msg_2d.z = 0;
+                copter_center_2d_pub.publish(msg_2d);
+
+            }
+
+        }
+
 
     }
 
-    //imshow("gray image: contours finalists", gray_img);
-    croppedFinalists.clear();
+    //imshow("gray image", gray_img);
+    cropped_finalists.clear();
+    copters.clear();
+    centers_3d_finalists_rgb.clear();
+
+}
+
+static void getDepthOfFocus(const cv::Mat& depth_orig, cv::Mat& depth_dof, double center, double width){
+
+    cv::Mat depth_dof_32 = Mat::zeros(depth_orig.rows, depth_orig.cols, CV_32FC1);
+
+    double thresh_min = center - width/2;
+    double thresh_max = center + width/2;
+    float curr;
+    for (int i = 0; i < depth_orig.rows; i++){
+        for (int j = 0; j < depth_orig.cols; j++){
+            curr = depth_orig.at<float>(i,j);
+
+            if (curr > thresh_min && curr < thresh_max){
+                depth_dof_32.at<float>(i,j) = curr;
+            }
+
+        }
+
+    }
+
+    //depth_dof = depth_dof_32.clone();
+
+    double min;
+    double max;
+    minMaxLoc(depth_dof_32, &min, &max);
+    //shift to zero
+    depth_dof_32 = depth_dof_32 - min;
+
+    cv::Mat temp;
+    if (max == 0){
+        depth_dof = Mat::zeros(depth_orig.rows, depth_orig.cols, CV_8UC1);
+        return;
+    }
+    depth_dof_32.convertTo(temp, CV_8UC1, 255/(max-min));
+    depth_dof = temp.clone();
+
 
 }
 
@@ -875,13 +1012,15 @@ static void getCroppedImagesFromContours(cv::Mat &ipImage, std::vector<cv::Mat> 
 
         //resize
         cv::resize(imageCropped, imageCropped, cv::Size(CASCADE_WIDTH, CASCADE_HEIGHT));
+
         opImages.push_back(imageCropped);
 
     }
 
 }
 
-static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours_finalists, std::vector<std::vector<cv::Point> > &contours_cand, const cv::Mat& depth_img_orig, const cv::Mat& kernel)
+static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours_finalists, std::vector<cv::Point3f> &centers_3d,
+                                  std::vector<std::vector<cv::Point> > &contours_cand, const cv::Mat& depth_img_orig, const cv::Mat& kernel)
 {
     if (contours_cand.empty()) { return; }
 
@@ -922,14 +1061,26 @@ static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours
         //TODO filter based on scale, not just depth
         if (depth_average > 0){
 
-            scale_area = calcApproxSurfaceArea(contour_depth_F, depth_average);
+            cv::Point3f center_3d;
+            scale_area = calcApproxSurfaceArea(contour_depth_F, depth_average, center_3d);
 
             //ROS_INFO("depth: %.6f", depth_average);
             //ROS_INFO("area: %.6f\n", scale_area);
 
             if (scale_area >= SCALE_AREA_MIN && scale_area <= SCALE_AREA_MAX){
                 contours_finalists.push_back(*it);
-                ROS_INFO("valid area: %.6f\n", scale_area);
+                centers_3d.push_back(center_3d);
+                //ROS_INFO("valid area: %.6f\n", scale_area);
+/*
+ *              //TODO test that area min and max are set well
+                cv::Mat depth_img;
+                depth_img_orig.convertTo(depth_img, CV_8UC1, 255/RANGE_MAX, 0);
+                cv::Rect rect = boundingRect(*it);
+                imshow("check for valid area", depth_img(rect));
+                cv::rectangle(depth_img, rect, cv::Scalar(0,0,255), 3);
+                imshow("check for valid area2", depth_img);
+                //cv::waitKey(0);
+*/
             }
 
         }
@@ -968,6 +1119,50 @@ static void filterContoursByShape(std::vector<std::vector<cv::Point> > &good_con
     }
 }
 
+cv::Point3f filterByAppearance(std::vector<cv::Mat> &croppedFinalists, std::vector<cv::Point3f> &centers_3d, std::vector<cv::Mat> &copters, cv::CascadeClassifier &copter_classifier){ //, Ptr<FeatureEvaluator>& feval
+
+    if (croppedFinalists.empty()) { return cv::Point3f(0,0,0); }
+
+    std::vector<cv::Rect> results;
+    cv::Mat copter_img;
+    int count = 0;
+    cv::Point3f center_3d = cv::Point3f(0,0,0); //if nothing is found, returns (0,0,0)
+    //run all the finalists through the classifier
+    for (std::vector<cv::Mat>::iterator it = croppedFinalists.begin() ; it != croppedFinalists.end(); ++it){
+
+        //Ptr<FeatureEvaluator> feat_eval = FeatureEvaluator::create(1);
+        //copter_classifier.setImage(feat_eval, *it);
+        //result = copter_classifier.runAt(feat_eval, cv::Point(0,0));
+
+
+        //TODO: problem. multiple results are being recorded. yet there is only one copter in the image
+        copter_classifier.detectMultiScale(*it, results, 1.1);
+
+        if (!results.empty()){
+            for (std::vector<cv::Rect>::iterator it_results = results.begin() ; it_results != results.end(); ++it_results){
+                //add the image cropped at the rectangle
+                copter_img = *it;
+                copters.push_back(copter_img(*it_results));
+                center_3d = centers_3d.at(count); //centers_3d holds parallel values of center_3d for each finalist
+                ROS_INFO("copter found!");
+
+            }
+            results.clear();
+        }
+        else {
+            ROS_INFO("candidate rejected! no results found");
+            //imshow("rejected candidate", *it);
+            //cv::waitKey(0);
+        }
+
+        count++;
+    }
+
+    return center_3d;
+
+}
+
+
 double findContourDepth(const cv::Mat &contour_depth_F)
 {
     double depth;
@@ -997,7 +1192,7 @@ double findContourDepth(const cv::Mat &contour_depth_F)
     return depth;
 }
 
-double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_average)
+double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_average, cv::Point3f &center_3d)
 {
     double area = 0;
 
@@ -1102,16 +1297,83 @@ double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_averag
     //cv::dilate(four_points_w, four_points_w, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1)), cv::Point(-1,-1), 4);
 
 
-    //imshow("camera: contour extreme pixels", four_points_c);
+    imshow("camera: contour extreme pixels", four_points_c);
     //imshow("world: contour extreme pixels", four_points_w);
 
     //calculate the surface area of the plane intersecting the 4 3d points
     area = (bottom_w.y - top_w.y)*(right_w.x - left_w.x);
+    center_3d = cv::Point3f(left_w.x + (right_w.x - left_w.x)/2, top_w.y + (bottom_w.y - top_w.y)/2, depth_average);
 
     return area;
 }
 
-static void viewImages(std::vector<cv::Mat> & images){
+static void viewImages(std::vector<cv::Mat> & images, string window_name, int &numPos, int &numNeg, bool &training_cascade){
+
+    if (images.empty()) { return; }
+
+    int key;
+
+    //crop all contours as images of the same size
+    //TODO maybe determine copter orientation: ie: if viewing front, back, left or right sides of copter and crop accordingly
+    for (std::vector<cv::Mat>::iterator it = images.begin() ; it != images.end(); ++it){
+
+        imshow(window_name, *it);
+        char buffer[10];
+
+        if (training_cascade){
+            //FOR TRAINING CASCADE CLASSIFIER
+            std::string filename;
+            key = cv::waitKey(0);
+            //if positive, save as positive
+            if (key == 112){
+                numPos++;
+                sprintf(buffer, "%d", numPos);
+                filename = string(TRAIN_PATH_POS) + string(buffer) + string(".pgm");
+                ROS_INFO("numPos: %d", numPos);
+                try {
+                        cv::imwrite(filename, *it);
+                    }
+                    catch (runtime_error& ex) {
+                        ROS_INFO("Exception converting image to format: %s", ex.what());
+
+                    }
+                /*
+                if (cv::imwrite(filename, *it))
+                {
+                    ROS_INFO("saved positive image number: %d", numPos);
+                }
+                else {
+                    ROS_INFO("error saving image");
+                }*/
+
+            }
+            //if negative, save as negative
+            else if (key == 110){
+                numNeg++;
+                sprintf(buffer, "%d", numNeg);
+                filename = string(TRAIN_PATH_NEG) + string(buffer) + string(".pgm");
+                ROS_INFO("numNeg: %d", numNeg);
+                try {
+                        cv::imwrite(filename, *it);
+                    }
+                    catch (runtime_error& ex) {
+                        ROS_INFO("Exception converting image to format: %s", ex.what());
+
+                    }
+                /*
+                if (cv::imwrite(filename, *it))
+                {
+                    ROS_INFO("saved negative image number: %d", numNeg);
+                }
+                else {
+                    ROS_INFO("error saving image");
+                }*/
+            }
+        }
+    }
+
+}
+static void viewImages(std::vector<cv::Mat> & images, string window_name){
 
     if (images.empty()) { return; }
 
@@ -1119,7 +1381,7 @@ static void viewImages(std::vector<cv::Mat> & images){
     //TODO maybe determine copter orientation: ie: if viewing front, back, left or right sides of copter and crop accordingly
     for (std::vector<cv::Mat>::iterator it = images.begin() ; it != images.end(); ++it){
 
-        imshow("cropped Images", *it);
+        imshow(window_name, *it);
     }
 
 }
@@ -1129,7 +1391,11 @@ int main(int argc, char **argv) {
     ros::NodeHandle nh;
 
     CopterTracker copter_tracker(nh);
-
+    if (argc > 1){
+        if (string(argv[1]) == "true"){
+            copter_tracker.training_cascade = true;
+        }
+    }
     namedWindow("Depth: Edges", WINDOW_AUTOSIZE);
     createTrackbar( "EdgeSliderLow", "Depth: Edges", &copter_tracker.edge_thresh_low, EDGE_LOW_MAX);
     createTrackbar( "EdgeSliderHigh", "Depth: Edges", &copter_tracker.edge_thresh_high, EDGE_HIGH_MAX);
@@ -1138,6 +1404,9 @@ int main(int argc, char **argv) {
     createTrackbar( "DepthScaleFactor", "Depth: Cleaned-Up", &copter_tracker.depth_scale_factor, DEPTH_SCALE_FACTOR_MAX);
     createTrackbar( "copyOut(0), interpolate(1)", "Depth: Cleaned-Up", &copter_tracker.function_toggle, NUM_FUNCTIONS-1);
     createTrackbar( "Blur Size", "Depth: Cleaned-Up", &copter_tracker.blur_size, BLUR_SIZE_MAX);
+
+    namedWindow("Depth of Focus", WINDOW_AUTOSIZE);
+    createTrackbar( "Depth of focus:", "Depth of Focus", &copter_tracker.depth_of_focus, DEPTH_OF_FOCUS_MAX);
 
 
 //    ros::ServiceServer switch_service = nh.advertiseService("model_switch",
