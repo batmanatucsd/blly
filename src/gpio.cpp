@@ -102,18 +102,18 @@ int main (int argc, char *argv[])
     memset(PIN_VALUES, GPIO_LOW, sizeof(PIN_VALUES));
 
     // create pins
-    GPIOPin pin1(GPIO_1, GPIO_OUT);
-    GPIOPin pin2(GPIO_2, GPIO_OUT);
-    GPIOPin pin3(GPIO_3, GPIO_OUT);
-    GPIOPin pin4(GPIO_4, GPIO_OUT);
-    GPIOPin pin7(GPIO_7, GPIO_OUT);
+    GPIOPin left_mid(GPIO_1, GPIO_OUT);
+    GPIOPin left(GPIO_2, GPIO_OUT);
+    GPIOPin right_mid(GPIO_3, GPIO_OUT);
+    GPIOPin mid(GPIO_4, GPIO_OUT);
+    GPIOPin right(GPIO_7, GPIO_OUT);
 
     while (ros::ok()) {
-        pin1.setPin(PIN_VALUES[1]);
-        pin2.setPin(PIN_VALUES[0]);
-        pin3.setPin(PIN_VALUES[3]);
-        pin4.setPin(PIN_VALUES[2]);
-        pin7.setPin(PIN_VALUES[4]);
+        left.setPin(PIN_VALUES[0]);
+        left_mid.setPin(PIN_VALUES[1]);
+        mid.setPin(PIN_VALUES[2]);
+        right_mid.setPin(PIN_VALUES[3]);
+        right.setPin(PIN_VALUES[4]);
         ros::spinOnce();
         loop_rate.sleep();
     }
