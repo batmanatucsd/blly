@@ -4,7 +4,7 @@
 
 #include <sstream>
 
-#define PTR_X_MAX   650
+#define PTR_X_MAX   640
 
 int main (int argc, char **argv)
 {
@@ -18,10 +18,9 @@ int main (int argc, char **argv)
     while (ros::ok()) {
         geometry_msgs::Point pnt;
         pnt.x = count;
-        pnt.z = 10;
         talker_pub.publish(pnt);
 
-        ROS_INFO("%d", count);
+        ROS_INFO("%d", pnt.x);
 
         count = (count + 10) % PTR_X_MAX;
         ros::spinOnce();
