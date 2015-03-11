@@ -11,4 +11,6 @@
     <node pkg="blly" type="track_copter" name="track_copter" output="screen">
     </node>
 
+    <node pkg="tf" type="static_transform_publisher" name="static_camera_frame_pub" args="1 0 0 0 0 0 1 static_camera_frame static_camera_frame2 100" />/>
+
 </launch>
