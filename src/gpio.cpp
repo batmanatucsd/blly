@@ -20,7 +20,7 @@
 #define GPIO_LOW    0
 #define GPIO_IN     "in"
 #define GPIO_OUT    "out"
-#define PTR_X_MAX   650
+#define PTR_X_MAX   640
 
 enum GPIO_PINS { GPIO_1=6, GPIO_2=7, GPIO_3=206, GPIO_4=207,
     GPIO_5=186, GPIO_6=189, GPIO_7=22, GPIO_8=23};
