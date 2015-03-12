@@ -435,10 +435,8 @@ void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
                 cv::Rect box(copter_center_2d.x - copter_img.cols/2, copter_center_2d.y - copter_img.rows/2, copter_img.cols, copter_img.rows);
                 cv::rectangle(rgb_orig->image, box, cv::Scalar(0,0,255), 4);
 
-            }
-
-        }
-
+            }            
+        } 
         if (!training_cascade && !use_classifier){
 
             int count = 0;
@@ -475,7 +473,7 @@ void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
                     //image_pub.publish(rgb_orig->toImageMsg());
 
                     count++;
-                }
+                } 
             }
 
         }
