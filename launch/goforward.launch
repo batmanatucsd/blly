@@ -1,0 +1,5 @@
+<launch>
+  <!-- turtlebot testing going forward -->  
+  <node pgk="blly" type="follow_object" name="follow_object" output="screen">
+    <remap from="follow_object/cmd_vel" to="cmd_vel_mux/input/teleop">   
+</launch>
