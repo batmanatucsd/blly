@@ -1,0 +1,8 @@
+<launch>
+
+    <node pkg="blly" type="gpio_talker" name="gpio_talker" output="screen" launch-prefix="xterm -e">
+    </node>
+
+    <node pkg="blly" type="gpio" name="gpio" output="screen">
+    </node>
+</launch>
