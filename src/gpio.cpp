@@ -20,10 +20,12 @@
 #define GPIO_LOW    0
 #define GPIO_IN     "in"
 #define GPIO_OUT    "out"
+#define PTR_X_MAX   640
 
 enum GPIO_PINS { GPIO_1=6, GPIO_2=7, GPIO_3=206, GPIO_4=207,
     GPIO_5=186, GPIO_6=189, GPIO_7=22, GPIO_8=23};
 int PIN_VALUES[5];
+enum PIN_DIR { LEFT, LEFT45, FRONT, RIGHT45, RIGHT };
 
 class GPIOPin
 {
@@ -77,7 +79,7 @@ void GPIOPin::setPin(int state)
     char buffer[4];
     memset(buffer, 0, sizeof(buffer));
     snprintf(buffer, sizeof(buffer), "%d", state);
-    ROS_INFO("Setting pin %d to %s", hwPinId, buffer);
+    //ROS_INFO("Setting pin %d to %s", hwPinId, buffer);
     lseek(fileDesc, 0, SEEK_SET);
     write(fileDesc, buffer, strlen(buffer));
 }
@@ -85,25 +87,22 @@ void GPIOPin::setPin(int state)
 void pinCallback(const geometry_msgs::Point::ConstPtr& msg)
 {
     memset(PIN_VALUES, GPIO_LOW, sizeof(PIN_VALUES));
-    /*
-    if (!(msg->data < 0 || msg->data > sizeof(PIN_VALUES)/sizeof(int))) {
-        PIN_VALUES[msg->data] = GPIO_HIGH;
-        ROS_INFO("%d is now on", msg->data);
-    }
-    */
-    // Calculate the angle
-    int ptr_angle;
     // Determine which block the point falls into
-    if (ptr_angle < -17.1) {
-        PIN_VALUES[0] = GPIO_HIGH;
-    } else if (ptr_angle < -5.7) {
-        PIN_VALUES[1] = GPIO_HIGH;
-    } else if (ptr_angle < 5.7) {
-        PIN_VALUES[2] = GPIO_HIGH;
-    } else if (ptr_angle < 17.1) {
-        PIN_VALUES[3] = GPIO_HIGH;
+    if (msg->x < PTR_X_MAX/5) {
+	ROS_INFO("LEFT ON");
+        PIN_VALUES[LEFT] = GPIO_HIGH;
+    } else if (msg->x < 2*PTR_X_MAX/5) {
+	ROS_INFO("LEFT 45 ON");
+        PIN_VALUES[LEFT45] = GPIO_HIGH;
+    } else if (msg->x < 3*PTR_X_MAX/5) {
+	ROS_INFO("FRONT ON");
+        PIN_VALUES[FRONT] = GPIO_HIGH;
+    } else if (msg->x < 4*PTR_X_MAX/5) {
+	ROS_INFO("RIGHT 45 ON");
+        PIN_VALUES[RIGHT45] = GPIO_HIGH;
     } else {
-        PIN_VALUES[4] = GPIO_HIGH;
+	ROS_INFO("RIGHT ON");
+        PIN_VALUES[RIGHT] = GPIO_HIGH;
     }
 }
 
@@ -112,25 +111,25 @@ int main (int argc, char *argv[])
 {
     ros::init(argc, argv, "gpio_controller");
     ros::NodeHandle n;
-    ros::Subscriber gpio_sub = n.subscribe<geometry_msgs::Point>("/gpio_ctl", 10, &pinCallback);
+    ros::Subscriber gpio_sub = n.subscribe<geometry_msgs::Point>("/copter_center_2d", 10, &pinCallback);
 
-    ros::Rate loop_rate(1);
+    ros::Rate loop_rate(10);
 
     memset(PIN_VALUES, GPIO_LOW, sizeof(PIN_VALUES));
 
     // create pins
-    GPIOPin left_mid(GPIO_1, GPIO_OUT);
-    GPIOPin left(GPIO_2, GPIO_OUT);
-    GPIOPin right_mid(GPIO_3, GPIO_OUT);
-    GPIOPin mid(GPIO_4, GPIO_OUT);
-    GPIOPin right(GPIO_7, GPIO_OUT);
+    GPIOPin left(GPIO_2, GPIO_OUT);		// 7
+    GPIOPin left_mid(GPIO_1, GPIO_OUT);		// 6
+    GPIOPin mid(GPIO_4, GPIO_OUT);		// 207
+    GPIOPin right_mid(GPIO_3, GPIO_OUT);	// 206
+    GPIOPin right(GPIO_7, GPIO_OUT);		// 22
 
     while (ros::ok()) {
-        left.setPin(PIN_VALUES[0]);
-        left_mid.setPin(PIN_VALUES[1]);
-        mid.setPin(PIN_VALUES[2]);
-        right_mid.setPin(PIN_VALUES[3]);
-        right.setPin(PIN_VALUES[4]);
+        left.setPin(PIN_VALUES[LEFT]);
+        left_mid.setPin(PIN_VALUES[LEFT45]);
+        mid.setPin(PIN_VALUES[FRONT]);
+        right_mid.setPin(PIN_VALUES[RIGHT45]);
+        right.setPin(PIN_VALUES[RIGHT]);
         ros::spinOnce();
         loop_rate.sleep();
     }
