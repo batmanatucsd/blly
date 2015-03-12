@@ -7,6 +7,8 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/highgui/highgui.hpp>
 
+double findAverageDepth(const cv::Mat &);
+
 class FollowObject {
 public:
   ros::Publisher vel_pub;
@@ -34,7 +36,8 @@ FollowObject::FollowObject() : goal_z(0.5), linear_scale(0.25), angular_scale(1.
 
   vel_pub = handler.advertise<geometry_msgs::Twist>("/mobile_base/commands/velocity" , 1, true);
   point_sub = handler.subscribe<geometry_msgs::Point>("/copter_center_3d", 10,
-                  &FollowObject::Callback, this);
+                  &FollowObject::callback, this);
+  image_sub_depth = iTrans.subscribe("/camera/depth/image", 1, &FollowObject::callback_depth, this);
 
   vel.linear.x = 0;
   vel.angular.z = 0;
@@ -71,14 +74,15 @@ void FollowObject::callback_depth(const sensor_msgs::ImageConstPtr& msg) {
   
   ROS_INFO("AVERAGE is DEPTH %lf", average_depth);
 
-  if(average_depth < 0.7) {
+  if(average_depth < 1.1) {
     vel.linear.x = 0; 
+    vel.angular.z = 0.5;
     vel_pub.publish(vel);
   }
 }
 
 double findAverageDepth(const cv::Mat &depth_image_F) {
-    float sum = 0;
+    double depth = 0, sum = 0;
     int count = 0;
 
     for(int i = 0; i < depth_image_F.rows; i++) {
