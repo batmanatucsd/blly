@@ -42,6 +42,34 @@ void FollowObject::Callback(const geometry_msgs::Point::ConstPtr& point) {
   vel_pub.publish(vel);
 }
 
+double findContourDepth(const cv::Mat &contour_depth_F) {
+    double depth;
+    double min;
+    double max;
+    minMaxLoc(contour_depth_F, &min, &max);
+    cv::Mat contour_depth_U(contour_depth_F.rows, contour_depth_F.cols, CV_8UC1);
+    //ROS_INFO("\nmin masked: %lf\nmax masked: %lf", min, max);
+    contour_depth_F.convertTo(contour_depth_U, CV_8UC1, 255/RANGE_MAX, 0);
+    //imshow("contour with depth", contour_depth_U);
+
+    float sum = 0;
+    int count = 0;
+    for(int i = 0; i < contour_depth_F.rows; i++) {
+        for(int j = 0; j < contour_depth_F.cols; j++) {
+
+            const float curr = contour_depth_F.at<float>(i, j);
+            if (curr == 0 || isnan(curr)) continue;
+            //ROS_INFO("curr: %lf", curr);
+
+            sum += curr;
+            count++;
+        }
+    }
+
+    (count == 0) ? (depth = 0) : (depth = sum/count);
+    return depth;
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "follow_object");
   FollowObject follow_object;
