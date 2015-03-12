@@ -18,7 +18,7 @@ private:
   double goal_z;
 };
 
-FollowObject::FollowObject() : goal_z(0.6), linear_scale(1.0), angular_scale(1.5), stop(false) {
+FollowObject::FollowObject() : goal_z(0.5), linear_scale(0.25), angular_scale(1.5), stop(true) {
   handler.param("linear_scale", linear_scale, linear_scale);
   handler.param("angular_linear", angular_scale, angular_scale);
 
@@ -26,14 +26,18 @@ FollowObject::FollowObject() : goal_z(0.6), linear_scale(1.0), angular_scale(1.5
   point_sub = handler.subscribe<geometry_msgs::Point>("/copter_center_3d", 10,
                   &FollowObject::Callback, this);
 
+  vel.linear.x = 0;
+  vel.angular.z = 0;
 }
 
 void FollowObject::Callback(const geometry_msgs::Point::ConstPtr& point) {
-  if(point->z > 0) {
-    vel.angular.z = angular_scale*point->x;
+  if(point->x != 0 && point->y != 0 && point->z > 0) {
+    vel.angular.z = -angular_scale*point->x;
     vel.linear.x = linear_scale*(point->z - goal_z);
     if(point->z - goal_z < 0)
-      stop = true;
+        stop = true;
+    else
+        stop = false;
 
   } else {
     vel.linear.x = 0;
@@ -73,16 +77,12 @@ double findContourDepth(const cv::Mat &contour_depth_F) {
 int main(int argc, char** argv) {
   ros::init(argc, argv, "follow_object");
   FollowObject follow_object;
-  //ros::spin();
-  
-  // DEBUG
-  //ros::NodeHandle handler;
-  //ros::Publisher vel_pub;
-  //vel_pub = handler.advertise<geometry_msgs::Twist>("cmd_vel", 1, true);
 
+  if(follow_object.stop)
+      follow_object.vel.linear.x = 0;
+   
   while(ros::ok()) {
-    if(!follow_object.stop)
-      follow_object.vel_pub.publish(follow_object.vel);
+    follow_object.vel_pub.publish(follow_object.vel);
     ros::spinOnce();
   }
 }
