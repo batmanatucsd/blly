@@ -1,8 +1,9 @@
 <launch>
   <!-- turtlebot testing going forward -->  
-  <node pgk="blly" type="follow_object" name="follow_object" output="screen">
-    <remap from="follow_object/cmd_vel" to="cmd_vel_mux/input/teleop"/>   
+  <node pkg="blly" type="follow_object" name="follow_object" output="screen">
+    <!-- <remap from="follow_object/cmd_vel" to="cmd_vel_mux/input/teleop"/>   -->
     <param name="linear_scale" value="0.5" type="double"/>
     <param name="angular_scale" value="1.5" type="double"/>
   </node>
+<!-- to="/mobile_base/commands/velocity" -->
 </launch>

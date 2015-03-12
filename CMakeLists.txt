@@ -116,6 +116,7 @@ include_directories(
 add_executable(track_copter src/track_copter.cpp)
 add_executable(gpio src/gpio.cpp)
 add_executable(gpio_talker src/gpio_talker.cpp)
+add_executable(follow_object src/follow_object.cpp)
 
 ## Add cmake target dependencies of the executable/library
 ## as an example, message headers may need to be generated before nodes
@@ -125,16 +126,19 @@ add_dependencies(gpio std_msgs)
 add_dependencies(gpio_talker std_msgs)
 
 ## Specify libraries to link a library or executable target against
- target_link_libraries(track_copter
-   ${catkin_LIBRARIES}
-   ${OpenCV_INCLUDE_DIRS}
- )
- target_link_libraries(gpio
-   ${catkin_LIBRARIES}
- )
- target_link_libraries(gpio_talker
-   ${catkin_LIBRARIES}
- )
+target_link_libraries(track_copter
+ ${catkin_LIBRARIES}
+ ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(gpio
+ ${catkin_LIBRARIES}
+)
+target_link_libraries(gpio_talker
+ ${catkin_LIBRARIES}
+)
+target_link_libraries(follow_object
+ ${catkin_LIBRARIES}
+)
 
 #############
 ## Install ##
