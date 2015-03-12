@@ -1,5 +1,5 @@
 <launch>
-
+<!--
     <node pkg="image_view" type="image_view" name="depth_image">
         <remap from="image" to="camera/depth/image"/>
     </node>
@@ -7,8 +7,10 @@
     <node pkg="image_view" type="image_view" name="rgb_image">
         <remap from="image" to="camera/rgb/image_color"/>
     </node>
-
+-->
     <node pkg="blly" type="track_copter" name="track_copter" output="screen">
     </node>
+
+    <node pkg="tf" type="static_transform_publisher" name="static_camera_frame_pub" args="1 0 0 0 0 0 1 static_camera_frame static_camera_frame2 100" />/>
 
 </launch>

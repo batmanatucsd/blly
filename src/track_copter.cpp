@@ -1,6 +1,8 @@
 #include "ros/ros.h"
+#include "blly/use_classifier.h"
 
 #include <geometry_msgs/Point.h>
+#include <geometry_msgs/PointStamped.h>
 #include <image_transport/image_transport.h>
 #include <cv_bridge/cv_bridge.h>
 #include <sensor_msgs/image_encodings.h>
@@ -21,7 +23,7 @@
 
 #define THRESH_MAG 3
 
-#define RANGE_MAX 9.757 //TODO find real max and min based on range of sensor (mm or meters)
+#define RANGE_MAX 9.757 //TODO find real max and min based on range of sensor (mm or meters) might be erronious noise max
 #define RANGE_MIN 0.01
 #define SLICE_DEPTH 1.0
 
@@ -33,12 +35,14 @@
 #define NUM_FUNCTIONS 2
 #define BLUR_SIZE_MAX 100
 //if 1, contours must be square. smaller value allows for skinnier contours
-#define CONTOUR_ECCENTRICTY_THRESH 0.3 //TODO look into the value for best approx
-#define IR_CAMERA_FOCAL_PX 580 //(focal point in pixels) //taken from wiki.ros.org/kinect_calibration/technical
-#define IR_CAMERA_FOCAL_PY 580 //TODO find actual focal length and calculate PX and PY based on pixel width and height (do not assume square pixel)
+#define CONTOUR_ECCENTRICTY_THRESH 0.45 //(1 is perfect square)TODO look into the value for best approx
+#define IR_CAMERA_FOCAL_PX 575.8 //(focal point in pixels) //taken from wiki.ros.org/kinect_calibration/technical
+#define IR_CAMERA_FOCAL_PY 575.8
+#define IR_CAMERA_CENTER_X 314.5
+#define IR_CAMERA_CENTER_Y 235.5
 
-#define SCALE_AREA_MIN 0.0001
-#define SCALE_AREA_MAX 0.04
+#define SCALE_AREA_MIN 0.0003
+#define SCALE_AREA_MAX 0.03
 
 #define CASCADE_WIDTH 100 //pixel width and height for cascade classifier. images will be cropped to this size
 #define CASCADE_HEIGHT 40
@@ -46,6 +50,7 @@
 #define TRAIN_PATH_NEG "//home/frank/turtlebot/src/blly/src/neg/"
 #define TRAIN_PATH_POS "//home/frank/turtlebot/src/blly/src/pos/"
 #define COPTER_CLASSIFIER_PATH "//home/frank/turtlebot/src/blly/src/classifiers/copter_all_500_500/cascade.xml"
+#define USING_TRACKBARS 0
 
 using namespace std;
 using namespace cv;
@@ -89,14 +94,18 @@ class CopterTracker
     bool shared_contours_finalists_writing;
     bool shared_contours_finalists_reading;
 
+    bool use_classifier;
+
     image_transport::ImageTransport iTrans;
 
     //image_transport::Publisher image_pub;
     ros::Publisher copter_center_3d_pub;
     ros::Publisher copter_center_2d_pub;
+    ros::Publisher copter_center_3d_stamped_pub;
 
     image_transport::Subscriber image_sub_depth;
     image_transport::Subscriber image_sub_rgb;
+    image_transport::Publisher image_pub;
 
     std::vector<std::vector<cv::Point> > contours;
     std::vector<std::vector<cv::Point> > contours_cand;
@@ -112,12 +121,13 @@ class CopterTracker
     std::vector<cv::Mat> cropped_finalists;
     std::vector<cv::Mat> copters;
 
+    blly::use_classifier srv;
+    ros::ServiceServer service;
 
     int numPos, numNeg;
 
     void callback_depth(const sensor_msgs::ImageConstPtr& msg);
     void callback_rgb(const sensor_msgs::ImageConstPtr& msg);
-
 
 
     public:
@@ -139,10 +149,14 @@ class CopterTracker
         //TODO possibly subscribe to rectified depth to improve reprojection accuracy
         image_sub_depth = iTrans.subscribe("/camera/depth/image", 1, &CopterTracker::callback_depth, this);
         image_sub_rgb = iTrans.subscribe("/camera/rgb/image_color", 1, &CopterTracker::callback_rgb, this);
+        image_pub = iTrans.advertise("/camera/rgb/copter_boxed", 1);
 
         //image_pub = iTrans.advertise("/camera/depth_cleaned/image", 1);
         copter_center_3d_pub = n.advertise<geometry_msgs::Point>("copter_center_3d", 1);
+        copter_center_3d_stamped_pub = n.advertise<geometry_msgs::PointStamped>("copter_center_stamped_3d", 1);
         copter_center_2d_pub = n.advertise<geometry_msgs::Point>("copter_center_2d", 1);
+
+        service = n.advertiseService("use_classifier", &CopterTracker::toggle_classifier_callback, this);
 
         edge_thresh_low = 32;
         edge_thresh_high = 46;
@@ -155,6 +169,7 @@ class CopterTracker
         rgb_locked_reading = false;
         //shared_contours_finalists_writing = false;
         //shared_contours_finalists_reading = false;
+        use_classifier = true;
 
         numPos = 0;
         numNeg = 0;
@@ -168,7 +183,30 @@ class CopterTracker
         //algorithm_mode = FOFA; //intializes the algorithm to FOFA
     }
 
+    bool toggle_classifier_callback(blly::use_classifier::Request &req, blly::use_classifier::Response &res)
+    {
+        switch (req.use_classifier)
+        {
+            case 1:
+                ROS_INFO("requested to use Cascade Classifier");
+                use_classifier = true;
+                res.feedback = "Cascade Classifier is now turned ON";
+                break;
+            case 0:
+                ROS_INFO("requested to NOT use Cascade Classifier");
+                use_classifier = false;
+                res.feedback = "Cascade Classifier is now turned OFF";
+                break;
+            default:
+            res.feedback = "Usage: rosservice call /use_classifier [1 or 0]";
+            break;
+        }
+        return true;
+    }
+
 };
+
+
 
 void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
 {   
@@ -198,6 +236,7 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     }
 
     //cv::waitKey(0);
+    //return;
 
     double min;
     double max;
@@ -210,16 +249,34 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
 
     //TODO investigate a tracking algorithm to speed up detection and searching
 
+    cv::Mat depth_median;
+    medianBlur(depth_orig->image, depth_median, 5);
+
     //convert to grayscale and make a copy
     cv::Mat depth_img;
+    //depth_orig->image.convertTo(depth_img, CV_8UC1, 255/RANGE_MAX, 0);//scale by the max value and shift by 0
     depth_orig->image.convertTo(depth_img, CV_8UC1, 255/RANGE_MAX, 0);//scale by the max value and shift by 0
+
+    cv::Rect center_rect(200,200,100,100);
+    //imshow("center table", depth_img(center_rect));
+    cv::waitKey(1);
+
+    cv::Mat table_img = depth_median(center_rect);
+    cv:: Scalar mean_scalar = mean(table_img);
+    //ROS_INFO("average depth: %lf", mean_scalar[0]);
+
+    minMaxLoc(depth_median, &min, &max);
+    //ROS_INFO("\nmin: %lf\nmax: %lf", min, max);
+
+    //return;
+
 
     cv::Mat depth_img_dof;
     double center = RANGE_MIN + SLICE_DEPTH/2 + double(depth_of_focus)/DEPTH_OF_FOCUS_MAX*(RANGE_MAX - (RANGE_MIN + SLICE_DEPTH));
     getDepthOfFocus(depth_orig->image, depth_img_dof, center, SLICE_DEPTH);
 
-    imshow("Depth of Focus", depth_img_dof);
-    cv::waitKey(1);
+    //imshow("Depth of Focus", depth_img_dof);
+    //cv::waitKey(1);
 
     cv::Mat depth_img_cleaned = depth_img.clone(); //copy depth_img
     //clean up the depth image by making erroneous black pixels white
@@ -251,13 +308,17 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     filterContoursByShape(contours_cand, contours, CONTOUR_ECCENTRICTY_THRESH);
 
     Mat contour_img = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
-    drawRectsFromContours(contour_img, contours_cand);
+    drawRectsFromContours(contour_img, contours);
 
-    imshow("depth", depth_img);
-    imshow("Depth: Cleaned-Up", depth_img_cleaned);
-    imshow("Depth: Edges", depth_img_edges);
+    Mat contour_img_shape = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
+    drawRectsFromContours(contour_img_shape, contours_cand);
 
-    imshow("Candidate Contours: filtered by shape", contour_img);
+    //imshow("Contours: Unfiltered", contour_img);
+    //imshow("depth", depth_img);
+    //imshow("Depth: Cleaned-Up", depth_img_cleaned);
+    //imshow("Depth: Edges", depth_img_edges);
+
+    //imshow("Candidate Contours: filtered by shape", contour_img_shape);
 
     //Mat test_img = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
     //drawContours(test_img, contours_cand, -1, 255, CV_FILLED);
@@ -271,11 +332,11 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     Mat contour_img_finalists = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
     drawRectsFromContours(contour_img_finalists, contours_finalists);
 
-    imshow("contour finalists: filtered by shape and scale", contour_img_finalists);
-    for (std::vector<cv::Point3f>::iterator it = centers_3d_finalists.begin() ; it != centers_3d_finalists.end(); ++it){
-        cv::Point3f p = *it;
+    //imshow("contour finalists: filtered by shape and scale", contour_img_finalists);
+    //for (std::vector<cv::Point3f>::iterator it = centers_3d_finalists.begin() ; it != centers_3d_finalists.end(); ++it){
+    //    cv::Point3f p = *it;
         //ROS_INFO("center finalist: (%lf, %lf, %lf)", p.x, p.y, p.z);
-    }
+    //}
 
 
     if (!shared_contours_finalists_reading) {
@@ -285,70 +346,6 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
         shared_contours_finalists_writing = false;
     }
 
-    //cv::waitKey(0);
-    //blur the image before applying algorithm
-    //cv::GaussianBlur(frame_gray, frame_gray, cv::Size(7, 7), 7, cv::BORDER_DEFAULT);
-/*
-    switch (algorithm_mode) {
-        case FOFA:
-            if (!prev.empty()){
-                cv::calcOpticalFlowFarneback(prev, frame_gray, uflow, 0.5, 2, 3, 2, 5, 1.1, 0);
-                cv::cvtColor(prev, cflow, cv::COLOR_GRAY2BGR);
-                uflow.copyTo(flow);
-                //draws arrows over the prev grayscale frames (cflow)
-                drawOptFlowMap(flow, cflow, 16, 1.5, cv::Scalar(0, 255, 0));
-                //imshow(FLOW_WINDOW_ARROWS, cflow);
-                cv::Mat intensityMap = cv::Mat::zeros(flow.rows, flow.cols, CV_8U);
-                //populates the intensityMap with the binary image for flow
-                drawMotionIntensity(flow, intensityMap);
-                //remove white specks (noise)
-                cv::erode(intensityMap, intensityMap, kernel, cv::Point(-1,-1), 7);
-                //dilate what's left to help find blob of body
-                cv::dilate(intensityMap, intensityMap, kernel, cv::Point(-1,-1), 30);
-                cv::findContours(intensityMap, contours, CV_RETR_EXTERNAL, CV_CHAIN_APPROX_NONE);
-                //draw rectanle on the original image
-                drawRectFromContours(frame_original_ptr->image, contours);
-                //drawContours(intensityMap, contours, -1, cv::Scalar(0,0,255), 3);
-                //rectangle(intensityMap, Point(5, 5), Point(100,100), Scalar(255,255,255), 5);
-                //imshow(FLOW_WINDOW_BINARY, intensityMap);
-            }
-            label.clear();
-            label.append(LABEL_FOFA);
-            break;
-        case MOG2:
-            bsmog(frame_gray, fg_mask, -1);
-            bsmog.set("nmixtures", 3);
-            cv::erode(fg_mask, fg_mask, kernel, cv::Point(-1,-1), 10);
-            cv::dilate(fg_mask, fg_mask, kernel, cv::Point(-1,-1), 32);
-            cv::findContours(fg_mask,contours,CV_RETR_EXTERNAL,CV_CHAIN_APPROX_NONE);
-            std::vector<std::vector<cv::Point> > contours_poly( contours.size() );
-            std::vector<cv::Rect> boundRect( contours.size() );
-            for( int i = 0; i < contours.size(); i++ ) {
-                cv::approxPolyDP( cv::Mat(contours[i]), contours_poly[i], 3, true );
-                boundRect[i] = cv::boundingRect( cv::Mat(contours_poly[i]) );
-                cv::rectangle(frame_original_ptr->image, boundRect[i].tl(), boundRect[i].br(), cv::Scalar(255, 0, 0), 2, 8, 0 );
-            }
-            //cv::imshow(MOG2_WINDOW, fg_mask);
-            label.clear();
-            label.append(LABEL_MOG2);
-            break;
-    }
-*/
-
-
-    // Add algorithm label to the image
-/*
-    rectangle(frame_original_ptr->image, cv::Point(10, 10), cv::Point(150,50),
-            cv::Scalar(255,255,255), -1);
-    putText(frame_original_ptr->image, label, cv::Point(25, 45),
-            cv::FONT_HERSHEY_SIMPLEX, 1.5 , cv::Scalar(0,0,0));
-
-    prev = frame_gray.clone();
-    image_pub.publish(frame_original_ptr->toImageMsg());
-
-    // Reset Contours
-    contours.clear();
-*/
 }
 
 void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
@@ -406,15 +403,14 @@ void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
 
         //croppedFinalists.clear();//testing entire image
         //croppedFinalists.push_back(gray_img);
-        if (!training_cascade){
+        if (!training_cascade && use_classifier){
             //send croppedFinalists to cascade classifier for final filtering
             cv::Point3f copter_center_3d = filterByAppearance(cropped_finalists, centers_3d_finalists_rgb, copters, copter_classifier);//feval
             viewImages(copters, string("copters"));
             if (copter_center_3d.x != 0 || copter_center_3d.y != 0 || copter_center_3d.z != 0){
                 //ROS_INFO("Copter found at: (%lf, %lf, %lf)", copter_center_3d.x, copter_center_3d.y, copter_center_3d.z);
                 //TODO publish the location of the copter. also publish it in image pixels by projecting to image plane
-                cv::Point center_cam = cv::Point(gray_img.cols/2, gray_img.rows/2);
-                cv::Point copter_center_2d = cv::Point(copter_center_3d.x/copter_center_3d.z*IR_CAMERA_FOCAL_PX + center_cam.x, copter_center_3d.y/copter_center_3d.z*IR_CAMERA_FOCAL_PY + center_cam.y);
+                cv::Point copter_center_2d = cv::Point(copter_center_3d.x/copter_center_3d.z*IR_CAMERA_FOCAL_PX + IR_CAMERA_CENTER_X, copter_center_3d.y/copter_center_3d.z*IR_CAMERA_FOCAL_PY + IR_CAMERA_CENTER_Y);
                 //ROS_INFO("Pixel location: (%d, %d)", copter_center_2d.x, copter_center_2d.y);
 
                 geometry_msgs::Point msg_3d;
@@ -424,15 +420,67 @@ void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
 
                 copter_center_3d_pub.publish(msg_3d);
 
+                geometry_msgs::PointStamped msg_3d_s;
+                msg_3d_s.header.frame_id = "static_camera_frame";
+                msg_3d_s.point = msg_3d;
+                copter_center_3d_stamped_pub.publish(msg_3d_s);
+
                 geometry_msgs::Point msg_2d;
                 msg_2d.x = copter_center_2d.x;
                 msg_2d.y = copter_center_2d.y;
                 msg_2d.z = 0;
                 copter_center_2d_pub.publish(msg_2d);
 
+                cv::Mat copter_img = copters[0];
+                cv::Rect box(copter_center_2d.x - copter_img.cols/2, copter_center_2d.y - copter_img.rows/2, copter_img.cols, copter_img.rows);
+                cv::rectangle(rgb_orig->image, box, cv::Scalar(0,0,255), 4);
+
             }
 
         }
+
+        if (!training_cascade && !use_classifier){
+
+            int count = 0;
+            for (std::vector<cv::Point3f> ::iterator it = centers_3d_finalists_rgb.begin() ; it != centers_3d_finalists_rgb.end(); ++it){
+
+                cv::Point3f copter_center_3d = *it;
+
+                if (copter_center_3d.x != 0 || copter_center_3d.y != 0 || copter_center_3d.z != 0){
+                    //ROS_INFO("Copter found at: (%lf, %lf, %lf)", copter_center_3d.x, copter_center_3d.y, copter_center_3d.z);
+                    //TODO publish the location of the copter. also publish it in image pixels by projecting to image plane
+                    cv::Point copter_center_2d = cv::Point(copter_center_3d.x/copter_center_3d.z*IR_CAMERA_FOCAL_PX + IR_CAMERA_CENTER_X, copter_center_3d.y/copter_center_3d.z*IR_CAMERA_FOCAL_PY + IR_CAMERA_CENTER_Y);
+                    //ROS_INFO("Pixel location: (%d, %d)", copter_center_2d.x, copter_center_2d.y);
+
+                    geometry_msgs::Point msg_3d;
+                    msg_3d.x = copter_center_3d.x;
+                    msg_3d.y = copter_center_3d.y;
+                    msg_3d.z = copter_center_3d.z;
+
+                    copter_center_3d_pub.publish(msg_3d);
+
+                    geometry_msgs::PointStamped msg_3d_s;
+                    msg_3d_s.header.frame_id = "static_camera_frame";
+                    msg_3d_s.point = msg_3d;
+                    copter_center_3d_stamped_pub.publish(msg_3d_s);
+
+                    geometry_msgs::Point msg_2d;
+                    msg_2d.x = copter_center_2d.x;
+                    msg_2d.y = copter_center_2d.y;
+                    msg_2d.z = 0;
+                    copter_center_2d_pub.publish(msg_2d);
+
+                    cv::Rect box = boundingRect(contours_finalists_rgb[count]);
+                    cv::rectangle(rgb_orig->image, box, cv::Scalar(0,0,255), 4);
+                    //image_pub.publish(rgb_orig->toImageMsg());
+
+                    count++;
+                }
+            }
+
+        }
+
+        image_pub.publish(rgb_orig->toImageMsg());
 
 
     }
@@ -1043,7 +1091,7 @@ static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours
         //erode to get exactly where the original contour was found (undo the dilation and try to leave the largest part)
         cv::erode(contour_mask, contour_mask, kernel, cv::Point(-1,-1), 4+4);
 
-        imshow("contour mask", contour_mask*255);
+        //imshow("contour mask", contour_mask*255);
         cv::Mat contour_depth_F(depth_img_orig.rows, depth_img_orig.cols, CV_32FC1);
         cv::Mat contour_mask_F(depth_img_orig.rows, depth_img_orig.cols, CV_32FC1);
 
@@ -1057,11 +1105,18 @@ static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours
         //ROS_INFO("sum: %lf", sum);
         //ROS_INFO("count: %d", count);
 
+        //increase the contour back to normal size //TODO test this now
+        cv::dilate(contour_mask, contour_mask, kernel, cv::Point(-1,-1), 4);
+        //imshow("contour mask 2", contour_mask*255);
+        contour_mask.convertTo(contour_mask_F, CV_32FC1);
+        contour_depth_F = depth_img_orig.mul(contour_mask_F);
 
-        //TODO filter based on scale, not just depth
+
+        //filter based on scale, not just depth
         if (depth_average > 0){
 
             cv::Point3f center_3d;
+            //TODO pass in larger contour by 4
             scale_area = calcApproxSurfaceArea(contour_depth_F, depth_average, center_3d);
 
             //ROS_INFO("depth: %.6f", depth_average);
@@ -1072,14 +1127,14 @@ static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours
                 centers_3d.push_back(center_3d);
                 //ROS_INFO("valid area: %.6f\n", scale_area);
 /*
- *              //TODO test that area min and max are set well
+                //TODO test that area min and max are set well
                 cv::Mat depth_img;
                 depth_img_orig.convertTo(depth_img, CV_8UC1, 255/RANGE_MAX, 0);
                 cv::Rect rect = boundingRect(*it);
                 imshow("check for valid area", depth_img(rect));
                 cv::rectangle(depth_img, rect, cv::Scalar(0,0,255), 3);
                 imshow("check for valid area2", depth_img);
-                //cv::waitKey(0);
+                cv::waitKey(0);
 */
             }
 
@@ -1144,13 +1199,13 @@ cv::Point3f filterByAppearance(std::vector<cv::Mat> &croppedFinalists, std::vect
                 copter_img = *it;
                 copters.push_back(copter_img(*it_results));
                 center_3d = centers_3d.at(count); //centers_3d holds parallel values of center_3d for each finalist
-                ROS_INFO("copter found!");
+                //ROS_INFO("copter found!");
 
             }
             results.clear();
         }
         else {
-            ROS_INFO("candidate rejected! no results found");
+            //ROS_INFO("candidate rejected! no results found");
             //imshow("rejected candidate", *it);
             //cv::waitKey(0);
         }
@@ -1172,7 +1227,7 @@ double findContourDepth(const cv::Mat &contour_depth_F)
     cv::Mat contour_depth_U(contour_depth_F.rows, contour_depth_F.cols, CV_8UC1);
     //ROS_INFO("\nmin masked: %lf\nmax masked: %lf", min, max);
     contour_depth_F.convertTo(contour_depth_U, CV_8UC1, 255/RANGE_MAX, 0);
-    imshow("contour with depth", contour_depth_U);
+    //imshow("contour with depth", contour_depth_U);
 
     float sum = 0;
     int count = 0;
@@ -1202,8 +1257,6 @@ double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_averag
     cv::Point top = cv::Point(-1,-1);
     cv::Point left = cv::Point(-1,-1);
     cv::Point bottom, right, bottom_cand, right_cand;
-
-    cv::Point center_cam = cv::Point(contour_depth_F.cols/2, contour_depth_F.rows/2);
 
     //3d world coordinates that will be reprojected via depth_average
     cv::Point3f top_w, bottom_w, left_w, right_w;
@@ -1262,17 +1315,17 @@ double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_averag
     ROS_DEBUG("camera: right at: (%d, %d)", right.x, right.y);
 
     //reproject top, bottom, left, and right using the average depth
-    top_w = cv::Point3f((top.x - center_cam.x)/float(IR_CAMERA_FOCAL_PX)*depth_average,
-                        (top.y - center_cam.y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+    top_w = cv::Point3f((top.x - IR_CAMERA_CENTER_X)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                        (top.y - IR_CAMERA_CENTER_Y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
                          depth_average);
-    bottom_w = cv::Point3f((bottom.x - center_cam.x)/float(IR_CAMERA_FOCAL_PX)*depth_average,
-                        (bottom.y - center_cam.y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+    bottom_w = cv::Point3f((bottom.x - IR_CAMERA_CENTER_X)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                        (bottom.y - IR_CAMERA_CENTER_Y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
                          depth_average);
-    left_w = cv::Point3f((left.x - center_cam.x)/float(IR_CAMERA_FOCAL_PX)*depth_average,
-                        (left.y - center_cam.y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+    left_w = cv::Point3f((left.x - IR_CAMERA_CENTER_X)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                        (left.y - IR_CAMERA_CENTER_Y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
                          depth_average);
-    right_w = cv::Point3f((right.x - center_cam.x)/float(IR_CAMERA_FOCAL_PX)*depth_average,
-                        (right.y - center_cam.y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+    right_w = cv::Point3f((right.x - IR_CAMERA_CENTER_X)/float(IR_CAMERA_FOCAL_PX)*depth_average,
+                        (right.y - IR_CAMERA_CENTER_Y)/float(IR_CAMERA_FOCAL_PX)*depth_average,
                          depth_average);
 
     ROS_DEBUG("world: top at: (%lf, %lf)", top_w.x, top_w.y);
@@ -1293,11 +1346,12 @@ double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_averag
     four_points_w.at<uchar>(left_w.y,left_w.x) = 255;
     four_points_w.at<uchar>(right_w.y,right_w.x) = 255;
 */
+    //dilate so points are visible
     cv::dilate(four_points_c, four_points_c, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1)), cv::Point(-1,-1), 4);
     //cv::dilate(four_points_w, four_points_w, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1)), cv::Point(-1,-1), 4);
 
 
-    imshow("camera: contour extreme pixels", four_points_c);
+    //imshow("camera: contour extreme pixels", four_points_c);
     //imshow("world: contour extreme pixels", four_points_w);
 
     //calculate the surface area of the plane intersecting the 4 3d points
@@ -1317,7 +1371,7 @@ static void viewImages(std::vector<cv::Mat> & images, string window_name, int &n
     //TODO maybe determine copter orientation: ie: if viewing front, back, left or right sides of copter and crop accordingly
     for (std::vector<cv::Mat>::iterator it = images.begin() ; it != images.end(); ++it){
 
-        imshow(window_name, *it);
+        //imshow(window_name, *it);
         char buffer[10];
 
         if (training_cascade){
@@ -1381,7 +1435,7 @@ static void viewImages(std::vector<cv::Mat> & images, string window_name){
     //TODO maybe determine copter orientation: ie: if viewing front, back, left or right sides of copter and crop accordingly
     for (std::vector<cv::Mat>::iterator it = images.begin() ; it != images.end(); ++it){
 
-        imshow(window_name, *it);
+        //imshow(window_name, *it);
     }
 
 }
@@ -1396,18 +1450,20 @@ int main(int argc, char **argv) {
             copter_tracker.training_cascade = true;
         }
     }
-    namedWindow("Depth: Edges", WINDOW_AUTOSIZE);
-    createTrackbar( "EdgeSliderLow", "Depth: Edges", &copter_tracker.edge_thresh_low, EDGE_LOW_MAX);
-    createTrackbar( "EdgeSliderHigh", "Depth: Edges", &copter_tracker.edge_thresh_high, EDGE_HIGH_MAX);
 
-    namedWindow("Depth: Cleaned-Up", WINDOW_AUTOSIZE);
-    createTrackbar( "DepthScaleFactor", "Depth: Cleaned-Up", &copter_tracker.depth_scale_factor, DEPTH_SCALE_FACTOR_MAX);
-    createTrackbar( "copyOut(0), interpolate(1)", "Depth: Cleaned-Up", &copter_tracker.function_toggle, NUM_FUNCTIONS-1);
-    createTrackbar( "Blur Size", "Depth: Cleaned-Up", &copter_tracker.blur_size, BLUR_SIZE_MAX);
+    if (USING_TRACKBARS){
+        namedWindow("Depth: Edges", WINDOW_AUTOSIZE);
+        createTrackbar( "EdgeSliderLow", "Depth: Edges", &copter_tracker.edge_thresh_low, EDGE_LOW_MAX);
+        createTrackbar( "EdgeSliderHigh", "Depth: Edges", &copter_tracker.edge_thresh_high, EDGE_HIGH_MAX);
 
-    namedWindow("Depth of Focus", WINDOW_AUTOSIZE);
-    createTrackbar( "Depth of focus:", "Depth of Focus", &copter_tracker.depth_of_focus, DEPTH_OF_FOCUS_MAX);
+        namedWindow("Depth: Cleaned-Up", WINDOW_AUTOSIZE);
+        createTrackbar( "DepthScaleFactor", "Depth: Cleaned-Up", &copter_tracker.depth_scale_factor, DEPTH_SCALE_FACTOR_MAX);
+        createTrackbar( "copyOut(0), interpolate(1)", "Depth: Cleaned-Up", &copter_tracker.function_toggle, NUM_FUNCTIONS-1);
+        createTrackbar( "Blur Size", "Depth: Cleaned-Up", &copter_tracker.blur_size, BLUR_SIZE_MAX);
 
+        namedWindow("Depth of Focus", WINDOW_AUTOSIZE);
+        createTrackbar( "Depth of focus:", "Depth of Focus", &copter_tracker.depth_of_focus, DEPTH_OF_FOCUS_MAX);
+    }
 
 //    ros::ServiceServer switch_service = nh.advertiseService("model_switch",
 //            &MotionDetector::switch_callback, &motion_detector);
