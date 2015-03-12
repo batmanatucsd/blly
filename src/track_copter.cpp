@@ -50,6 +50,7 @@
 #define TRAIN_PATH_NEG "//home/frank/turtlebot/src/blly/src/neg/"
 #define TRAIN_PATH_POS "//home/frank/turtlebot/src/blly/src/pos/"
 #define COPTER_CLASSIFIER_PATH "//home/frank/turtlebot/src/blly/src/classifiers/copter_all_500_500/cascade.xml"
+#define USING_TRACKBARS 0
 
 using namespace std;
 using namespace cv;
@@ -189,12 +190,16 @@ class CopterTracker
             case 1:
                 ROS_INFO("requested to use Cascade Classifier");
                 use_classifier = true;
+                res.feedback = "Cascade Classifier is now turned ON";
                 break;
             case 0:
                 ROS_INFO("requested to NOT use Cascade Classifier");
                 use_classifier = false;
+                res.feedback = "Cascade Classifier is now turned OFF";
                 break;
-            default: break;
+            default:
+            res.feedback = "Usage: rosservice call /use_classifier [1 or 0]";
+            break;
         }
         return true;
     }
@@ -271,7 +276,7 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     getDepthOfFocus(depth_orig->image, depth_img_dof, center, SLICE_DEPTH);
 
     //imshow("Depth of Focus", depth_img_dof);
-    cv::waitKey(1);
+    //cv::waitKey(1);
 
     cv::Mat depth_img_cleaned = depth_img.clone(); //copy depth_img
     //clean up the depth image by making erroneous black pixels white
@@ -303,13 +308,17 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     filterContoursByShape(contours_cand, contours, CONTOUR_ECCENTRICTY_THRESH);
 
     Mat contour_img = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
-    drawRectsFromContours(contour_img, contours_cand);
+    drawRectsFromContours(contour_img, contours);
 
-    imshow("depth", depth_img);
-    imshow("Depth: Cleaned-Up", depth_img_cleaned);
-    imshow("Depth: Edges", depth_img_edges);
+    Mat contour_img_shape = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
+    drawRectsFromContours(contour_img_shape, contours_cand);
 
-    imshow("Candidate Contours: filtered by shape", contour_img);
+    //imshow("Contours: Unfiltered", contour_img);
+    //imshow("depth", depth_img);
+    //imshow("Depth: Cleaned-Up", depth_img_cleaned);
+    //imshow("Depth: Edges", depth_img_edges);
+
+    //imshow("Candidate Contours: filtered by shape", contour_img_shape);
 
     //Mat test_img = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
     //drawContours(test_img, contours_cand, -1, 255, CV_FILLED);
@@ -323,7 +332,7 @@ void CopterTracker::callback_depth(const sensor_msgs::ImageConstPtr& msg)
     Mat contour_img_finalists = Mat::zeros(depth_img_edges.rows, depth_img_edges.cols, CV_8UC1);
     drawRectsFromContours(contour_img_finalists, contours_finalists);
 
-    imshow("contour finalists: filtered by shape and scale", contour_img_finalists);
+    //imshow("contour finalists: filtered by shape and scale", contour_img_finalists);
     //for (std::vector<cv::Point3f>::iterator it = centers_3d_finalists.begin() ; it != centers_3d_finalists.end(); ++it){
     //    cv::Point3f p = *it;
         //ROS_INFO("center finalist: (%lf, %lf, %lf)", p.x, p.y, p.z);
@@ -476,7 +485,7 @@ void CopterTracker::callback_rgb(const sensor_msgs::ImageConstPtr& msg)
 
     }
 
-    imshow("gray image", gray_img);
+    //imshow("gray image", gray_img);
     cropped_finalists.clear();
     copters.clear();
     centers_3d_finalists_rgb.clear();
@@ -1082,7 +1091,7 @@ static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours
         //erode to get exactly where the original contour was found (undo the dilation and try to leave the largest part)
         cv::erode(contour_mask, contour_mask, kernel, cv::Point(-1,-1), 4+4);
 
-        imshow("contour mask", contour_mask*255);
+        //imshow("contour mask", contour_mask*255);
         cv::Mat contour_depth_F(depth_img_orig.rows, depth_img_orig.cols, CV_32FC1);
         cv::Mat contour_mask_F(depth_img_orig.rows, depth_img_orig.cols, CV_32FC1);
 
@@ -1098,7 +1107,7 @@ static void filterContoursByScale(std::vector<std::vector<cv::Point> > &contours
 
         //increase the contour back to normal size //TODO test this now
         cv::dilate(contour_mask, contour_mask, kernel, cv::Point(-1,-1), 4);
-        imshow("contour mask 2", contour_mask*255);
+        //imshow("contour mask 2", contour_mask*255);
         contour_mask.convertTo(contour_mask_F, CV_32FC1);
         contour_depth_F = depth_img_orig.mul(contour_mask_F);
 
@@ -1190,7 +1199,7 @@ cv::Point3f filterByAppearance(std::vector<cv::Mat> &croppedFinalists, std::vect
                 copter_img = *it;
                 copters.push_back(copter_img(*it_results));
                 center_3d = centers_3d.at(count); //centers_3d holds parallel values of center_3d for each finalist
-                ROS_INFO("copter found!");
+                //ROS_INFO("copter found!");
 
             }
             results.clear();
@@ -1218,7 +1227,7 @@ double findContourDepth(const cv::Mat &contour_depth_F)
     cv::Mat contour_depth_U(contour_depth_F.rows, contour_depth_F.cols, CV_8UC1);
     //ROS_INFO("\nmin masked: %lf\nmax masked: %lf", min, max);
     contour_depth_F.convertTo(contour_depth_U, CV_8UC1, 255/RANGE_MAX, 0);
-    imshow("contour with depth", contour_depth_U);
+    //imshow("contour with depth", contour_depth_U);
 
     float sum = 0;
     int count = 0;
@@ -1342,7 +1351,7 @@ double calcApproxSurfaceArea(const cv::Mat &contour_depth_F, double depth_averag
     //cv::dilate(four_points_w, four_points_w, cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(3,3), cv::Point(-1,-1)), cv::Point(-1,-1), 4);
 
 
-    imshow("camera: contour extreme pixels", four_points_c);
+    //imshow("camera: contour extreme pixels", four_points_c);
     //imshow("world: contour extreme pixels", four_points_w);
 
     //calculate the surface area of the plane intersecting the 4 3d points
@@ -1362,7 +1371,7 @@ static void viewImages(std::vector<cv::Mat> & images, string window_name, int &n
     //TODO maybe determine copter orientation: ie: if viewing front, back, left or right sides of copter and crop accordingly
     for (std::vector<cv::Mat>::iterator it = images.begin() ; it != images.end(); ++it){
 
-        imshow(window_name, *it);
+        //imshow(window_name, *it);
         char buffer[10];
 
         if (training_cascade){
@@ -1426,7 +1435,7 @@ static void viewImages(std::vector<cv::Mat> & images, string window_name){
     //TODO maybe determine copter orientation: ie: if viewing front, back, left or right sides of copter and crop accordingly
     for (std::vector<cv::Mat>::iterator it = images.begin() ; it != images.end(); ++it){
 
-        imshow(window_name, *it);
+        //imshow(window_name, *it);
     }
 
 }
@@ -1441,18 +1450,20 @@ int main(int argc, char **argv) {
             copter_tracker.training_cascade = true;
         }
     }
-    namedWindow("Depth: Edges", WINDOW_AUTOSIZE);
-    createTrackbar( "EdgeSliderLow", "Depth: Edges", &copter_tracker.edge_thresh_low, EDGE_LOW_MAX);
-    createTrackbar( "EdgeSliderHigh", "Depth: Edges", &copter_tracker.edge_thresh_high, EDGE_HIGH_MAX);
 
-    namedWindow("Depth: Cleaned-Up", WINDOW_AUTOSIZE);
-    createTrackbar( "DepthScaleFactor", "Depth: Cleaned-Up", &copter_tracker.depth_scale_factor, DEPTH_SCALE_FACTOR_MAX);
-    createTrackbar( "copyOut(0), interpolate(1)", "Depth: Cleaned-Up", &copter_tracker.function_toggle, NUM_FUNCTIONS-1);
-    createTrackbar( "Blur Size", "Depth: Cleaned-Up", &copter_tracker.blur_size, BLUR_SIZE_MAX);
+    if (USING_TRACKBARS){
+        namedWindow("Depth: Edges", WINDOW_AUTOSIZE);
+        createTrackbar( "EdgeSliderLow", "Depth: Edges", &copter_tracker.edge_thresh_low, EDGE_LOW_MAX);
+        createTrackbar( "EdgeSliderHigh", "Depth: Edges", &copter_tracker.edge_thresh_high, EDGE_HIGH_MAX);
 
-    namedWindow("Depth of Focus", WINDOW_AUTOSIZE);
-    createTrackbar( "Depth of focus:", "Depth of Focus", &copter_tracker.depth_of_focus, DEPTH_OF_FOCUS_MAX);
+        namedWindow("Depth: Cleaned-Up", WINDOW_AUTOSIZE);
+        createTrackbar( "DepthScaleFactor", "Depth: Cleaned-Up", &copter_tracker.depth_scale_factor, DEPTH_SCALE_FACTOR_MAX);
+        createTrackbar( "copyOut(0), interpolate(1)", "Depth: Cleaned-Up", &copter_tracker.function_toggle, NUM_FUNCTIONS-1);
+        createTrackbar( "Blur Size", "Depth: Cleaned-Up", &copter_tracker.blur_size, BLUR_SIZE_MAX);
 
+        namedWindow("Depth of Focus", WINDOW_AUTOSIZE);
+        createTrackbar( "Depth of focus:", "Depth of Focus", &copter_tracker.depth_of_focus, DEPTH_OF_FOCUS_MAX);
+    }
 
 //    ros::ServiceServer switch_service = nh.advertiseService("model_switch",
 //            &MotionDetector::switch_callback, &motion_detector);

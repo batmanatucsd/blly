@@ -14,9 +14,16 @@ find_package(catkin REQUIRED COMPONENTS
     sensor_msgs
     cv_bridge
     image_transport
+    nodelet
+    pcl_ros
+    visualization_msgs
+    turtlebot_msgs
+    dynamic_reconfigure
 
 )
 find_package(Boost REQUIRED COMPONENTS thread)
+    
+#generate_dynamic_reconfigure_options(cfg/Follower.cfg)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -96,6 +103,9 @@ catkin_package(
 #  LIBRARIES track_copter
 #  CATKIN_DEPENDS roscpp rospy std_msgs
 #  DEPENDS system_lib
+#  INCLUDE_DIRS
+#  LIBRARIES copter_tracker
+#  CATKIN_DEPENDS nodelet roscpp visualization_msgs turtlebot_msgs dynamic_reconfigure
 )
 
 ###########
@@ -120,6 +130,10 @@ include_directories(
 add_executable(track_copter src/track_copter.cpp)
 add_executable(gpio src/gpio.cpp)
 add_executable(gpio_talker src/gpio_talker.cpp)
+add_executable(copter_follower src/copter_follower.cpp)
+    
+#add_library(blly src/follower.cpp)
+#add_library(copter_follower src/follower.cpp)
 
 ## Add cmake target dependencies of the executable/library
 ## as an example, message headers may need to be generated before nodes
@@ -127,6 +141,9 @@ add_executable(gpio_talker src/gpio_talker.cpp)
 #add_dependencies(track_copter std_msgs)
 add_dependencies(gpio std_msgs)
 add_dependencies(gpio_talker std_msgs)
+#add_dependencies(copter_follower turtlebot_msgs_gencpp)
+#add_dependencies(copter_follower copter_follower_gencfg)
+
 
 ## Specify libraries to link a library or executable target against
  target_link_libraries(track_copter
@@ -139,6 +156,10 @@ add_dependencies(gpio_talker std_msgs)
  target_link_libraries(gpio_talker
    ${catkin_LIBRARIES}
  )
+ target_link_libraries(copter_follower
+   ${catkin_LIBRARIES}
+ )
+
 
 #############
 ## Install ##
