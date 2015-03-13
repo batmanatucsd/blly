@@ -2,8 +2,5 @@
 	<include file="$(find turtlebot_bringup)/launch/minimal.launch"/>
     <include file="$(find openni_launch)/launch/openni.launch"/>
     <include file="$(find blly)/launch/track_copter.launch"/>
-    <include file="$(find blly)/launch/gpio.launch"/>
     <include file="$(find blly)/launch/follow_object.launch"/>
-
-
 </launch>
