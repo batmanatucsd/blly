@@ -129,7 +129,6 @@ include_directories(
 ## Declare a cpp executable
 add_executable(track_copter src/track_copter.cpp)
 add_executable(gpio src/gpio.cpp)
-add_executable(gpio_talker src/gpio_talker.cpp)
 add_executable(follow_object src/follow_object.cpp)
 
 ## Add cmake target dependencies of the executable/library
@@ -137,7 +136,6 @@ add_executable(follow_object src/follow_object.cpp)
 # add_dependencies(track_copter_node track_copter_generate_messages_cpp)
 #add_dependencies(track_copter std_msgs)
 add_dependencies(gpio std_msgs)
-add_dependencies(gpio_talker std_msgs)
 #add_dependencies(copter_follower turtlebot_msgs_gencpp)
 #add_dependencies(copter_follower copter_follower_gencfg)
 
@@ -148,9 +146,6 @@ target_link_libraries(track_copter
  ${OpenCV_INCLUDE_DIRS}
 )
 target_link_libraries(gpio
- ${catkin_LIBRARIES}
-)
-target_link_libraries(gpio_talker
  ${catkin_LIBRARIES}
 )
 target_link_libraries(follow_object
